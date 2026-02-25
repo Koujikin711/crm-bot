@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+.venv/
+env/
+
+# База (если храните локально; на Amvera лучше CRM_DB_PATH в /data)
+*.db
+*.sqlite3
+
+# Секреты и конфиги с токенами (не коммитить!)
+.env
+.env.local
+*.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Прочее
+.DS_Store
+*.log
