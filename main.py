@@ -14,23 +14,30 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# --- КОНФИГУРАЦИЯ ---
-API_TOKEN = '8404693091:AAEGJlbIy-toCi5tOqRllt5o1P3oRHkFyPE'
-ID_INSTANCE = '7103499086'
-API_TOKEN_INSTANCE = 'c143271a593d461a9bef407fcaaedca3e2c4268346f143f3b8'
-API_URL = 'https://7103.api.greenapi.com'
+# --- КОНФИГУРАЦИЯ (переопределяется через .env или переменные окружения) ---
+try:
+    from dotenv import load_dotenv
+    from pathlib import Path
+    load_dotenv(Path(__file__).resolve().parent / ".env")
+except ImportError:
+    pass
+
+API_TOKEN = os.environ.get("API_TOKEN") or "8404693091:AAEGJlbIy-toCi5tOqRllt5o1P3oRHkFyPE"
+ID_INSTANCE = os.environ.get("ID_INSTANCE") or "7103499086"
+API_TOKEN_INSTANCE = os.environ.get("API_TOKEN_INSTANCE") or "c143271a593d461a9bef407fcaaedca3e2c4268346f143f3b8"
+API_URL = (os.environ.get("API_URL") or "https://7103.api.greenapi.com").strip().rstrip("/")
 # Медицина (второй инстанс Green API). Телефон: 992877631000
 # Можно переопределить через env: MED_ID_INSTANCE, MED_API_TOKEN, MED_API_URL
 MED_ID_INSTANCE = (os.environ.get('MED_ID_INSTANCE') or '7103507365').strip()
 MED_API_TOKEN = (os.environ.get('MED_API_TOKEN') or '925f590eb2a24be9a462321974bca84fd53e067da54149d098').strip()
 MED_API_URL = (os.environ.get('MED_API_URL') or 'https://7103.api.greenapi.com').strip().rstrip('/')
 
-# Путь к БД: задайте CRM_DB_PATH в окружении (напр. /data/crm_base.db), чтобы данные не терялись при перезапуске/деплое
+# Путь к БД: задайте CRM_DB_PATH в окружении (напр. /data/crm_base.db)
 DB_PATH = os.environ.get('CRM_DB_PATH', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'crm_base.db'))
 _db_dir = os.path.dirname(DB_PATH)
 if _db_dir and not os.path.isdir(_db_dir):
     os.makedirs(_db_dir, exist_ok=True)
-OWNER_ID = 6428583782  # основной владелец; можно добавлять других через «Дать права владельца»
+OWNER_ID = int(os.environ.get("OWNER_ID") or "6428583782")
 
 # Глобальная aiohttp-сессия для Green API (создаётся в main())
 g_http_session: aiohttp.ClientSession = None
@@ -287,7 +294,7 @@ def get_owner_med_menu():
     kb = ReplyKeyboardBuilder()
     kb.button(text="📊 Нагруженность"); kb.button(text="📈 Статистика лидов")
     kb.button(text="👤 Назначить Админа"); kb.button(text="📂 Загрузка данных")
-    kb.button(text="👑 Дать права владельца"); kb.button(text="💰 Приход"); kb.button(text="🎯 План/KPI")
+    kb.button(text="👑 Дать права владельца"); kb.button(text="💰 Приход"); kb.button(text="🎯 План/KPI"); kb.button(text="🎯 Поставить План")
     kb.button(text="📋 Лиды в работе"); kb.button(text="📥 Поступления лидов (мед)"); kb.button(text="💬 Начать диалог")
     kb.button(text="🔍 Поиск лида"); kb.button(text="📂 Выгрузка (мед)"); kb.button(text="📌 Доработать"); kb.button(text="🔥 Уволить"); kb.button(text="◀ Назад")
     kb.adjust(2)
@@ -521,9 +528,11 @@ async def _process_wa_instance(instance_name, base_url, instance_id, token):
                     execute_query("UPDATE leads SET last_touch = ? WHERE phone = ?", (datetime.now().strftime("%Y-%m-%d %H:%M"), phone))
                     is_active = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (mgr_id,), fetchone=True)
                     if not is_active or (instance_name == 'med' and is_active[1] != 'med'):
-                        first_owner = get_first_owner_id()
-                        execute_query("UPDATE leads SET manager_id = ? WHERE phone = ?", (first_owner, phone))
-                        mgr_id = first_owner
+                        # Лиды НЕ идут владельцу: ставим в очередь (pending), сообщение никому не пересылаем.
+                        execute_query("UPDATE leads SET manager_id = NULL, status = 'pending' WHERE phone = ?", (phone,))
+                        await _wa_delete(delete_url + "/" + str(rid))
+                        processed_this_cycle += 1
+                        continue
                     # Режим «прямого коридора»: лид в статусе chatting — пересылаем только текстом (без кнопок), сохраняем message_id для чистки.
                     if status == 'chatting':
                         txt = _extract_wa_text(body) if not body.get('messageData', {}).get('fileMessageData') else '[Файл/голос]'
@@ -627,8 +636,7 @@ async def _process_wa_instance(instance_name, base_url, instance_id, token):
                                 logging.exception("send_message to manager %s failed: %s", target, e)
                                 print(f"[CRM] Ошибка отправки карточки менеджеру {target}: {e}")
                         else:
-                            # Все заняты — лид в очередь (pending). manager_id = NULL, уведомляем владельца.
-                            first_owner = get_first_owner_id()
+                            # Все заняты — лид только в очереди. Владельцу не шлём — лид придёт освободившемуся менеджеру.
                             execute_query(
                                 "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction) VALUES (?, ?, 'pending', NULL, ?, 1, ?)",
                                 (phone, c_name, datetime.now(), instance_name),
@@ -636,10 +644,9 @@ async def _process_wa_instance(instance_name, base_url, instance_id, token):
                             logging.warning("%s: all busy, lead %s in queue (pending)", instance_name, phone)
                             print(f"[CRM] {instance_name}: все заняты, лид {phone} в очереди")
                             try:
-                                await bot.send_message(first_owner, f"📥 <b>НОВЫЙ ЛИД В ОЧЕРЕДИ</b>\n👤 {c_name}\n📞 {phone}\n\nМенеджеры заняты. Лид придёт первому освободившемуся.", parse_mode="HTML")
+                                await asyncio.sleep(0.3)
                             except Exception:
                                 pass
-                            await asyncio.sleep(0.3)
                 await _wa_delete(delete_url + "/" + str(rid))
                 processed_this_cycle += 1
                 await asyncio.sleep(0)  # отдать event loop — чтобы бот не «зависал»
@@ -1402,7 +1409,9 @@ async def reply_start(c: types.CallbackQuery, state: FSMContext):
 @dp.message(Form.waiting_for_reply)
 async def reply_done(m: types.Message, state: FSMContext):
     d = await state.get_data()
-    target = d.get('target')
+    # Всегда берём целевой номер из активной сессии — чтобы ответ не ушёл другому клиенту
+    session = execute_query("SELECT phone FROM chat_sessions WHERE user_id = ?", (m.from_user.id,), fetchone=True)
+    target = session[0] if session else d.get('target')
     if not target:
         return
     sphere = d.get('new_chat_sphere') or get_lead_direction(target)
@@ -1616,8 +1625,16 @@ async def cl_fin(m: types.Message, state: FSMContext):
     await try_assign_queued_lead_to_manager(m.from_user.id, mgr_sphere)
 
 @dp.message(F.text == "🎯 Поставить План")
-async def p_list(m: types.Message):
-    st = execute_query("SELECT user_id, fio, sphere FROM users WHERE role='manager'", fetchall=True)
+async def p_list(m: types.Message, state: FSMContext):
+    data = await state.get_data()
+    sphere = data.get("owner_current_sphere")  # med | biz — из меню владельца
+    if sphere == "med":
+        st = execute_query("SELECT user_id, fio, sphere FROM users WHERE role='manager' AND sphere='med'", fetchall=True)
+    else:
+        st = execute_query("SELECT user_id, fio, sphere FROM users WHERE role='manager' AND (sphere='biz' OR sphere IS NULL)", fetchall=True)
+    if not st:
+        await m.answer("Нет менеджеров в выбранном направлении.")
+        return
     kb = InlineKeyboardBuilder()
     for row in st:
         sid, fio = row[0], row[1]
@@ -1662,12 +1679,89 @@ async def wl(m: types.Message, state: FSMContext):
     data = await state.get_data()
     sphere = data.get("owner_current_sphere")
     if is_owner(m.from_user.id) and sphere == "med":
-        l = execute_query("SELECT phone, name FROM leads WHERE status='active' AND direction = 'med'", fetchall=True)
+        cond = "status IN ('active', 'chatting') AND direction = 'med'"
         title = "📋 <b>В РАБОТЕ (Медицина):</b>"
     else:
-        l = execute_query("SELECT phone, name FROM leads WHERE status='active' AND (direction = 'biz' OR direction IS NULL)", fetchall=True)
+        cond = "status IN ('active', 'chatting') AND (direction = 'biz' OR direction IS NULL)"
         title = "📋 <b>В РАБОТЕ (Бизнес):</b>"
-    await m.answer(title + "\n" + "\n".join([f"👤 {x[1]} ({x[0]})" for x in l]) if l else title + "\nПусто", parse_mode="HTML")
+    rows = execute_query(
+        f"SELECT l.phone, l.name, l.manager_id, l.status FROM leads l WHERE {cond} ORDER BY l.last_touch DESC",
+        fetchall=True,
+    )
+    if not rows:
+        await m.answer(title + "\n\nПусто", parse_mode="HTML")
+        return
+    lines = [title + "\n"]
+    kb = InlineKeyboardBuilder()
+    for phone, name, mgr_id, st in rows:
+        fio = "—"
+        if mgr_id:
+            u = execute_query("SELECT fio FROM users WHERE user_id = ?", (mgr_id,), fetchone=True)
+            fio = (u[0] or str(mgr_id)) if u else str(mgr_id)
+        status_label = "в диалоге" if st == "chatting" else "активен"
+        lines.append(f"👤 <b>{name}</b> ({phone})\n   Ответственный: {fio} [{status_label}]")
+        kb.button(text=f"↩ Перенаправить: {name}", callback_data=f"reas_{phone}")
+    await m.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb.adjust(1).as_markup())
+
+
+@dp.callback_query(F.data.startswith("reas_"))
+async def reassign_lead_choose(c: types.CallbackQuery, state: FSMContext):
+    """Выбор менеджера для перенаправления лида."""
+    if not is_owner(c.from_user.id):
+        await c.answer()
+        return
+    phone = c.data.replace("reas_", "")[:30]
+    row = execute_query("SELECT name, manager_id, direction FROM leads WHERE phone = ?", (phone,), fetchone=True)
+    if not row:
+        await c.answer("Лид не найден.")
+        return
+    name, old_mgr_id, direction = row[0], row[1], (row[2] or "biz")
+    await state.update_data(reassign_phone=phone, reassign_old_mgr=old_mgr_id, reassign_direction=direction)
+    managers = get_managers_by_direction(direction)
+    kb = InlineKeyboardBuilder()
+    for uid, fio in managers:
+        if uid != old_mgr_id:
+            kb.button(text=f"→ {fio}", callback_data=f"reto_{phone}_{uid}")
+    if not kb.buttons:
+        await c.answer("Нет других менеджеров в этом направлении.")
+        return
+    await c.message.answer(f"Кому перенаправить лида <b>{name}</b> ({phone})?", reply_markup=kb.adjust(1).as_markup(), parse_mode="HTML")
+    await c.answer()
+
+
+@dp.callback_query(F.data.startswith("reto_"))
+async def reassign_lead_do(c: types.CallbackQuery, state: FSMContext):
+    """Перенаправить лид другому менеджеру и удалить из чата старого."""
+    if not is_owner(c.from_user.id):
+        await c.answer()
+        return
+    parts = c.data.split("_")
+    if len(parts) < 3:
+        await c.answer()
+        return
+    phone = parts[1][:30]
+    new_mgr_id = int(parts[2])
+    row = execute_query("SELECT name, manager_id FROM leads WHERE phone = ?", (phone,), fetchone=True)
+    if not row:
+        await c.answer("Лид не найден.")
+        return
+    name, old_mgr_id = row[0], row[1]
+    execute_query("UPDATE leads SET manager_id = ? WHERE phone = ?", (new_mgr_id, phone))
+    execute_query("DELETE FROM chat_sessions WHERE user_id = ? AND phone = ?", (old_mgr_id, phone))
+    if old_mgr_id:
+        await chat_history_delete_messages(old_mgr_id, phone=phone)
+        try:
+            await bot.send_message(old_mgr_id, f"📤 Лид <b>{name}</b> ({phone}) перенаправлен другому менеджеру.", parse_mode="HTML")
+        except Exception:
+            pass
+    kb = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone}").adjust(2).as_markup()
+    try:
+        await bot.send_message(new_mgr_id, f"📥 <b>Лида перенаправили вам</b>\n👤 {name}\n📞 {phone}", reply_markup=kb, parse_mode="HTML")
+    except Exception:
+        pass
+    await c.message.edit_text(f"✅ Лид {name} ({phone}) перенаправлен.")
+    await state.clear()
+    await c.answer()
 
 # ========== МЕДИЦИНА: меню владельца и админа ==========
 @dp.message(F.text == "📊 Нагруженность")
