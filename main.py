@@ -1447,7 +1447,40 @@ async def reply_done(m: types.Message, state: FSMContext):
     sent = await m.answer("✅ Отправлено!", reply_markup=get_med_finish_dialog_kb())
     chat_history_add(m.from_user.id, sent.message_id, phone=target, context="session")
 
-# Медицина: итог диалога — Отказ / Подумает / Оплатил
+
+@dp.message(F.text.contains("Завершить диалог"))
+async def finish_dialog_fallback(m: types.Message, state: FSMContext):
+    """Резервный обработчик кнопки «Завершить диалог», если FSM-состояние потеряно (перезапуск бота и т.п.)."""
+    if await state.get_state() == Form.waiting_for_reply.state:
+        return  # уже обработает reply_done
+    session = execute_query("SELECT phone FROM chat_sessions WHERE user_id = ?", (m.from_user.id,), fetchone=True)
+    if not session:
+        await m.answer("Сейчас нет активного диалога. Начните диалог по лиду через «НАПИСАТЬ».", reply_markup=get_main_menu(m.from_user.id))
+        return
+    target = session[0]
+    sphere = get_lead_direction(target)
+    await chat_history_delete_messages(m.from_user.id, phone=target)
+    execute_query("DELETE FROM chat_sessions WHERE user_id = ? AND phone = ?", (m.from_user.id, target))
+    u = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (m.from_user.id,), fetchone=True)
+    if not u:
+        return
+    if sphere == 'med' and u[1] == 'med':
+        kb = InlineKeyboardBuilder()
+        kb.button(text="❌ Отказ", callback_data=f"med_r_{target}")
+        kb.button(text="⏳ Подумает", callback_data=f"med_t_{target}")
+        kb.button(text="💰 Оплатил", callback_data=f"med_p_{target}")
+        kb.button(text="🚫 НЕ ОТВЕЧАЮТ", callback_data=f"med_n_{target}")
+        kb.adjust(1)
+        await m.answer("Итог диалога:", reply_markup=kb.as_markup())
+    else:
+        kb = InlineKeyboardBuilder()
+        kb.button(text="💰 ОПЛАТИЛ", callback_data=f"f_s_{target}")
+        kb.button(text="⏳ ДУМАЕТ", callback_data=f"f_t_{target}")
+        kb.button(text="❌ ОТКАЗ", callback_data=f"f_r_{target}")
+        kb.button(text="🚫 НЕ ОТВЕТИЛ", callback_data=f"f_n_{target}")
+        kb.adjust(1)
+        await m.answer("Итог диалога:", reply_markup=kb.as_markup())
+    await state.clear()
 MED_PACKAGES = ["Пакет 1", "Пакет 2", "Пакет 3", "Первичка", "Вторичка"]
 
 @dp.callback_query(F.data.startswith("med_r_"))
