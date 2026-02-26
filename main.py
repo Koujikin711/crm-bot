@@ -169,6 +169,8 @@ class Form(StatesGroup):
     med_paid_sum = State()
     # Удобство: поиск лида (ввод номера или ФИО)
     lead_search_query = State()
+    # Медицина: комментарий при отказе
+    refuse_comment_med = State()
 
 # --- БАЗА ДАННЫХ ---
 def execute_query(query, params=(), fetchone=False, fetchall=False):
@@ -437,13 +439,17 @@ def _get_wa_file_info(body):
     """Если входящее сообщение — файл (фото/видео/аудио/документ), возвращает (typeMessage, downloadUrl, caption). Иначе None."""
     md = body.get('messageData') or {}
     t = md.get('typeMessage')
-    if t not in ('imageMessage', 'videoMessage', 'audioMessage', 'documentMessage'):
-        return None
-    fmd = md.get('fileMessageData') or {}
-    url = fmd.get('downloadUrl')
+    fmd = md.get('fileMessageData') or body.get('fileMessageData') or {}
+    if not t and fmd:
+        t = body.get('typeMessage') or 'imageMessage'
+    url = fmd.get('downloadUrl') or body.get('downloadUrl')
     if not url:
         return None
-    caption = (fmd.get('caption') or '').strip() or None
+    if not t:
+        t = 'imageMessage'
+    if t not in ('imageMessage', 'videoMessage', 'audioMessage', 'documentMessage'):
+        t = 'imageMessage'
+    caption = (fmd.get('caption') or body.get('caption') or '').strip() or None
     return (t, url, caption)
 
 async def _send_wa_text(api_url, token, chat_id, text):
@@ -529,6 +535,13 @@ async def _process_wa_instance(instance_name, base_url, instance_id, token):
                     is_active = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (mgr_id,), fetchone=True)
                     if not is_active or (instance_name == 'med' and is_active[1] != 'med'):
                         # Лиды НЕ идут владельцу: ставим в очередь (pending), сообщение никому не пересылаем.
+                        execute_query("UPDATE leads SET manager_id = NULL, status = 'pending' WHERE phone = ?", (phone,))
+                        await _wa_delete(delete_url + "/" + str(rid))
+                        processed_this_cycle += 1
+                        continue
+                    # Если менеджер сейчас в диалоге с ДРУГИМ клиентом — этот лид не перебиваем: в очередь, сообщение не пересылаем.
+                    session = execute_query("SELECT phone FROM chat_sessions WHERE user_id = ?", (mgr_id,), fetchone=True)
+                    if session and session[0] != phone:
                         execute_query("UPDATE leads SET manager_id = NULL, status = 'pending' WHERE phone = ?", (phone,))
                         await _wa_delete(delete_url + "/" + str(rid))
                         processed_this_cycle += 1
@@ -714,7 +727,7 @@ async def job_chatting_idle():
     """Если менеджер открыл коридор (chatting), но не пишет клиенту > 20 мин — напомнить."""
     while True:
         try:
-            await asyncio.sleep(60)
+            await asyncio.sleep(300)
             cutoff = (datetime.now() - timedelta(minutes=CHATTING_IDLE_MINUTES)).strftime("%Y-%m-%d %H:%M:%S")
             rows = execute_query(
                 "SELECT user_id, phone, reminder_sent FROM chat_sessions WHERE last_outgoing_at < ? AND COALESCE(reminder_sent, 0) = 0",
@@ -1415,7 +1428,7 @@ async def reply_done(m: types.Message, state: FSMContext):
     if not target:
         return
     sphere = d.get('new_chat_sphere') or get_lead_direction(target)
-    if m.text and m.text.strip() == "✅ Завершить диалог":
+    if m.text and "Завершить диалог" in (m.text or ""):
         # Удаляем все сообщения текущей сессии; остаётся только итог и финальная карточка
         await chat_history_delete_messages(m.from_user.id, phone=target)
         execute_query("DELETE FROM chat_sessions WHERE user_id = ? AND phone = ?", (m.from_user.id, target))
@@ -1446,7 +1459,6 @@ async def reply_done(m: types.Message, state: FSMContext):
     execute_query("INSERT OR REPLACE INTO chat_sessions (user_id, phone, last_outgoing_at, reminder_sent) VALUES (?, ?, ?, 0)", (m.from_user.id, target, now_iso))
     sent = await m.answer("✅ Отправлено!", reply_markup=get_med_finish_dialog_kb())
     chat_history_add(m.from_user.id, sent.message_id, phone=target, context="session")
-
 
 @dp.message(F.text.contains("Завершить диалог"))
 async def finish_dialog_fallback(m: types.Message, state: FSMContext):
@@ -1481,28 +1493,39 @@ async def finish_dialog_fallback(m: types.Message, state: FSMContext):
         kb.adjust(1)
         await m.answer("Итог диалога:", reply_markup=kb.as_markup())
     await state.clear()
+
 MED_PACKAGES = ["Пакет 1", "Пакет 2", "Пакет 3", "Первичка", "Вторичка"]
 
 @dp.callback_query(F.data.startswith("med_r_"))
 async def med_end_refuse(c: types.CallbackQuery, state: FSMContext):
+    """Медицина: Отказ — сначала спрашиваем комментарий."""
     phone = c.data[6:]
     if len(phone) > 30:
         phone = phone[:30]
-    execute_query("UPDATE leads SET status='closed', is_answered=0 WHERE phone=? AND direction='med'", (phone,))
-    execute_query("DELETE FROM follow_up_queue WHERE phone = ?", (phone,))
-    execute_query("DELETE FROM chat_sessions WHERE user_id = ? AND phone = ?", (c.from_user.id, phone))
-    log_lead_event(phone, "status_change", "closed: Отказ", c.from_user.id)
-    execute_query("UPDATE users SET is_busy=0 WHERE user_id=?", (c.from_user.id,))
-    try:
-        await c.message.delete()
-    except Exception:
-        pass
-    text, kbd = build_lead_card(phone)
-    await c.message.answer(text or "✅ Отказ зафиксирован.", reply_markup=kbd, parse_mode="HTML")
-    await c.message.answer("Меню", reply_markup=get_main_menu(c.from_user.id))
-    await state.clear()
-    await try_assign_queued_lead_to_manager(c.from_user.id, 'med')
+    await state.update_data(refuse_phone=phone)
+    await state.set_state(Form.refuse_comment_med)
+    await c.message.edit_text("📝 Введите комментарий: почему отказали?")
     await c.answer()
+
+
+@dp.message(Form.refuse_comment_med)
+async def med_refuse_comment_done(m: types.Message, state: FSMContext):
+    d = await state.get_data()
+    phone = d.get("refuse_phone")
+    if not phone:
+        await state.clear()
+        return
+    comment = (m.text or "").strip() or "Без комментария"
+    execute_query("UPDATE leads SET status='closed', is_answered=0, comment=? WHERE phone=? AND direction='med'", (f"Отказ: {comment}", phone))
+    execute_query("DELETE FROM follow_up_queue WHERE phone = ?", (phone,))
+    execute_query("DELETE FROM chat_sessions WHERE user_id = ? AND phone = ?", (m.from_user.id, phone))
+    log_lead_event(phone, "status_change", f"closed: Отказ — {comment[:100]}", m.from_user.id)
+    execute_query("UPDATE users SET is_busy=0 WHERE user_id=?", (m.from_user.id,))
+    text, kbd = build_lead_card(phone)
+    await m.answer(text or "✅ Отказ зафиксирован.", reply_markup=kbd, parse_mode="HTML")
+    await m.answer("Меню", reply_markup=get_main_menu(m.from_user.id))
+    await state.clear()
+    await try_assign_queued_lead_to_manager(m.from_user.id, 'med')
 
 @dp.callback_query(F.data.startswith("med_t_"))
 async def med_end_think(c: types.CallbackQuery, state: FSMContext):
