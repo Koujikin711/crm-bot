@@ -14,30 +14,13 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
-# --- КОНФИГУРАЦИЯ (переопределяется через .env или переменные окружения) ---
-try:
-    from dotenv import load_dotenv
-    from pathlib import Path
-    load_dotenv(Path(__file__).resolve().parent / ".env")
-except ImportError:
-    pass
-
-API_TOKEN = os.environ.get("API_TOKEN") or "8404693091:AAEGJlbIy-toCi5tOqRllt5o1P3oRHkFyPE"
-ID_INSTANCE = os.environ.get("ID_INSTANCE") or "7103499086"
-API_TOKEN_INSTANCE = os.environ.get("API_TOKEN_INSTANCE") or "c143271a593d461a9bef407fcaaedca3e2c4268346f143f3b8"
-API_URL = (os.environ.get("API_URL") or "https://7103.api.greenapi.com").strip().rstrip("/")
-# Медицина (второй инстанс Green API). Телефон: 992877631000
-# Можно переопределить через env: MED_ID_INSTANCE, MED_API_TOKEN, MED_API_URL
-MED_ID_INSTANCE = (os.environ.get('MED_ID_INSTANCE') or '7103507365').strip()
-MED_API_TOKEN = (os.environ.get('MED_API_TOKEN') or '925f590eb2a24be9a462321974bca84fd53e067da54149d098').strip()
-MED_API_URL = (os.environ.get('MED_API_URL') or 'https://7103.api.greenapi.com').strip().rstrip('/')
-
-# Путь к БД: задайте CRM_DB_PATH в окружении (напр. /data/crm_base.db)
-DB_PATH = os.environ.get('CRM_DB_PATH', os.path.join(os.path.dirname(os.path.abspath(__file__)), 'crm_base.db'))
-_db_dir = os.path.dirname(DB_PATH)
-if _db_dir and not os.path.isdir(_db_dir):
-    os.makedirs(_db_dir, exist_ok=True)
-OWNER_ID = int(os.environ.get("OWNER_ID") or "6428583782")
+from config import (
+    API_TOKEN, ID_INSTANCE, API_TOKEN_INSTANCE, API_URL,
+    MED_ID_INSTANCE, MED_API_TOKEN, MED_API_URL,
+    DB_PATH, OWNER_ID, DOCTOR_LIMITS, CHATTING_IDLE_MINUTES,
+    REMINDER_24H_HOURS, REMINDER_24H_WINDOW_HOURS,
+)
+from db import execute_query, init_db
 
 # Глобальная aiohttp-сессия для Green API (создаётся в main())
 g_http_session: aiohttp.ClientSession = None
@@ -100,7 +83,11 @@ async def safe_callback_answer(c: types.CallbackQuery, text: str = None):
             raise
 
 async def try_assign_queued_lead_to_manager(manager_id: int, direction: str):
-    """После закрытия лида: если есть лид в очереди (status=pending), назначить его этому менеджеру."""
+    """После закрытия лида: если есть лид в очереди (status=pending), назначить его этому менеджеру. Для бизнеса — только если глобально лиды включены."""
+    if direction != 'med':
+        l_on = execute_query("SELECT value FROM settings WHERE key = 'leads_enabled'", fetchone=True)
+        if not l_on or l_on[0] != '1':
+            return
     if direction == 'med':
         cond = "direction = 'med'"
     else:
@@ -126,11 +113,14 @@ async def try_assign_queued_lead_to_manager(manager_id: int, direction: str):
         execute_query("UPDATE users SET is_busy = 0 WHERE user_id = ?", (manager_id,))
 
 def get_free_manager_for_direction(direction: str):
-    """Менеджер свободен: is_busy=0 И нет лидов active/chatting за ним."""
+    """Менеджер свободен: is_busy=0 И нет лидов active/chatting за ним. Для бизнеса учитывается глобальный leads_enabled."""
     if direction == 'med':
         role_cond = "LOWER(role)='manager' AND sphere='med'"
         lead_cond = "direction = 'med'"
     else:
+        l_on = execute_query("SELECT value FROM settings WHERE key = 'leads_enabled'", fetchone=True)
+        if not l_on or l_on[0] != '1':
+            return None
         role_cond = "(LOWER(role)='manager' AND (sphere='biz' OR sphere IS NULL)) OR (LOWER(role)='admin' AND (sphere='biz' OR sphere IS NULL) AND COALESCE(can_receive_leads,0)=1)"
         lead_cond = "(direction = 'biz' OR direction IS NULL)"
     row = execute_query(
@@ -178,64 +168,13 @@ class Form(StatesGroup):
     lead_search_query = State()
     # Медицина: комментарий при отказе
     refuse_comment_med = State()
-
-# --- БАЗА ДАННЫХ ---
-def execute_query(query, params=(), fetchone=False, fetchall=False):
-    with sqlite3.connect(DB_PATH, timeout=30) as conn:
-        conn.execute('PRAGMA journal_mode=WAL;')
-        cur = conn.cursor()
-        cur.execute(query, params)
-        if fetchone: return cur.fetchone()
-        if fetchall: return cur.fetchall()
-        conn.commit()
-
-def init_db():
-    execute_query('CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY, role TEXT, is_busy INTEGER DEFAULT 0, plan INTEGER DEFAULT 0, fio TEXT, sphere TEXT, can_receive_leads INTEGER DEFAULT 0)')
-    execute_query('''CREATE TABLE IF NOT EXISTS leads 
-                      (phone TEXT PRIMARY KEY, name TEXT, status TEXT, 
-                       manager_id INTEGER, sphere TEXT, comment TEXT, touches INTEGER DEFAULT 0, 
-                       last_touch DATETIME, is_answered INTEGER DEFAULT 0,
-                       direction TEXT, payment REAL DEFAULT 0, debt REAL DEFAULT 0,
-                       service TEXT, payment_date TEXT, massage_sessions INTEGER DEFAULT 0)''')
-    execute_query('CREATE TABLE IF NOT EXISTS auth_queue (phone TEXT PRIMARY KEY, step INTEGER DEFAULT 0, instance_sphere TEXT)')
-    execute_query('CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT)')
-    execute_query('''CREATE TABLE IF NOT EXISTS appointments 
-                      (id INTEGER PRIMARY KEY AUTOINCREMENT, date TEXT, time TEXT, doctor TEXT, phone TEXT)''')
-    execute_query('CREATE TABLE IF NOT EXISTS pending_reg (user_id INTEGER PRIMARY KEY, fio TEXT)')
-    execute_query('''CREATE TABLE IF NOT EXISTS lead_events
-                      (id INTEGER PRIMARY KEY AUTOINCREMENT, phone TEXT, event_type TEXT, event_data TEXT, created_at TEXT, user_id INTEGER)''')
-    execute_query('''CREATE TABLE IF NOT EXISTS reminded_24h (phone TEXT, sphere TEXT, reminded_at TEXT, PRIMARY KEY (phone, sphere))''')
-    execute_query('''CREATE TABLE IF NOT EXISTS follow_up_queue (phone TEXT PRIMARY KEY, direction TEXT, created_at TEXT, last_message TEXT)''')
-    execute_query('''CREATE TABLE IF NOT EXISTS chat_history (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, message_id INTEGER, phone TEXT, created_at TEXT, context TEXT)''')
-    execute_query('''CREATE TABLE IF NOT EXISTS chat_sessions (user_id INTEGER, phone TEXT PRIMARY KEY, last_outgoing_at TEXT, reminder_sent INTEGER DEFAULT 0)''')
-    try: execute_query("ALTER TABLE chat_history ADD COLUMN context TEXT")
-    except: pass
-    try: execute_query("ALTER TABLE chat_sessions ADD COLUMN reminder_sent INTEGER DEFAULT 0")
-    except: pass
-    try: execute_query("ALTER TABLE leads ADD COLUMN direction TEXT")
-    except: pass
-    try: execute_query("ALTER TABLE leads ADD COLUMN payment REAL DEFAULT 0")
-    except: pass
-    try: execute_query("ALTER TABLE leads ADD COLUMN debt REAL DEFAULT 0")
-    except: pass
-    try: execute_query("ALTER TABLE leads ADD COLUMN service TEXT")
-    except: pass
-    try: execute_query("ALTER TABLE leads ADD COLUMN payment_date TEXT")
-    except: pass
-    try: execute_query("ALTER TABLE leads ADD COLUMN massage_sessions INTEGER DEFAULT 0")
-    except: pass
-    try: execute_query("ALTER TABLE leads ADD COLUMN created_at TEXT")
-    except: pass
-    try: execute_query("ALTER TABLE users ADD COLUMN sphere TEXT")
-    except: pass
-    try: execute_query("ALTER TABLE users ADD COLUMN can_receive_leads INTEGER DEFAULT 0")
-    except: pass
-    try: execute_query("ALTER TABLE auth_queue ADD COLUMN instance_sphere TEXT")
-    except: pass
-    try: execute_query("ALTER TABLE leads ADD COLUMN is_answered INTEGER DEFAULT 0")
-    except: pass
-    execute_query("INSERT OR REPLACE INTO users (user_id, role, fio, sphere) VALUES (?, 'owner', 'Фаридун', NULL)", (OWNER_ID,))
-    execute_query("INSERT OR IGNORE INTO settings (key, value) VALUES ('leads_enabled', '1')")
+    # Задача по лиду (текст и срок)
+    lead_task_text = State()
+    lead_task_due = State()
+    # Заметка по лиду
+    lead_note_text = State()
+    # Выгрузка за период
+    export_biz_period = State()
 
 def _wa_urls(sphere):
     """URLs для отправки в WA: sphere = 'biz' | 'med'."""
@@ -278,8 +217,10 @@ def get_main_menu(uid):
         kb.adjust(2)
         return kb.as_markup(resize_keyboard=True)
     if role == 'admin' and sphere == 'med':
-        kb.button(text="📊 Нагруженность"); kb.button(text="📅 Записать к Ганчине")
+        kb.button(text="📊 Нагруженность"); kb.button(text="📈 Статистика лидов")
+        kb.button(text="📅 Записать к Ганчине"); kb.button(text="📋 Лиды в работе"); kb.button(text="📥 Поступления лидов (мед)")
         kb.button(text="💬 Начать диалог"); kb.button(text="🔍 Поиск лида"); kb.button(text="📌 Доработать"); kb.button(text="💰 Оплаты"); kb.button(text="🔄 Продлить курс")
+        kb.button(text="🎯 План/KPI")
         kb.button(text="◀ Назад в меню")
         kb.adjust(2)
         return kb.as_markup(resize_keyboard=True)
@@ -288,14 +229,12 @@ def get_main_menu(uid):
         kb.adjust(2)
         return kb.as_markup(resize_keyboard=True)
     # Бизнес: admin или manager
-    l_on = execute_query("SELECT value FROM settings WHERE key = 'leads_enabled'", fetchone=True)
-    l_btn = "🟢 ВКЛ ЛИДЫ" if (l_on and l_on[0] == '1') else "🔴 ВЫКЛ ЛИДЫ"
     if role == 'admin' and (sphere == 'biz' or sphere is None):
         personal = "📥 Мои лиды: ВКЛ" if can_leads else "📥 Мои лиды: ВЫКЛ"
         kb.button(text="📈 Статистика"); kb.button(text="👤 KPI Менеджеров")
         kb.button(text="📋 Лиды в работе"); kb.button(text="💬 Начать диалог")
         kb.button(text="🔍 Поиск лида"); kb.button(text="📌 Доработать"); kb.button(text="📥 Поступления лидов")
-        kb.button(text=l_btn); kb.button(text=personal)
+        kb.button(text=personal)
     elif role == 'manager' and (sphere == 'biz' or sphere is None):
         kb.button(text="⏳ Дожим"); kb.button(text="✅ Оплачено"); kb.button(text="❌ Отказ"); kb.button(text="📌 Доработать")
     kb.adjust(2)
@@ -307,7 +246,7 @@ def get_owner_med_menu():
     kb.button(text="👤 Назначить Админа"); kb.button(text="📂 Загрузка данных")
     kb.button(text="👑 Дать права владельца"); kb.button(text="💰 Приход"); kb.button(text="🎯 План/KPI"); kb.button(text="🎯 Поставить План")
     kb.button(text="📋 Лиды в работе"); kb.button(text="📥 Поступления лидов (мед)"); kb.button(text="💬 Начать диалог")
-    kb.button(text="🔍 Поиск лида"); kb.button(text="📂 Выгрузка (мед)"); kb.button(text="📌 Доработать"); kb.button(text="🔥 Уволить"); kb.button(text="◀ Назад")
+    kb.button(text="🔍 Поиск лида"); kb.button(text="📂 Выгрузка (мед)"); kb.button(text="📌 Доработать"); kb.button(text="🔥 Уволить"); kb.button(text="⏱ Время в работе"); kb.button(text="◀ Назад")
     kb.adjust(2)
     return kb.as_markup(resize_keyboard=True)
 
@@ -320,7 +259,7 @@ def get_owner_biz_menu():
     kb.button(text="🔍 Поиск лида"); kb.button(text="📥 Поступления лидов")
     kb.button(text=l_btn)
     kb.button(text="📌 Доработать"); kb.button(text="👤 Назначить админа бизнеса"); kb.button(text="👑 Дать права владельца")
-    kb.button(text="📂 Загрузка данных"); kb.button(text="🔥 Уволить"); kb.button(text="🎯 Поставить План")
+    kb.button(text="📂 Загрузка данных"); kb.button(text="⏱ Время в работе"); kb.button(text="🔥 Уволить"); kb.button(text="🎯 Поставить План")
     kb.button(text="◀ Назад")
     kb.adjust(2)
     return kb.as_markup(resize_keyboard=True)
@@ -392,16 +331,45 @@ def get_lead_phone_by_prefix(phone_prefix: str):
     )
     return row[0] if row else None
 
+def lead_note_add(phone: str, user_id: int, text: str):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M")
+    execute_query("INSERT INTO lead_notes (phone, user_id, text, created_at) VALUES (?, ?, ?, ?)", (phone, user_id, (text or "")[:1000], now))
+
+def lead_notes_list(phone: str, limit: int = 5):
+    rows = execute_query("SELECT user_id, text, created_at FROM lead_notes WHERE phone = ? ORDER BY id DESC LIMIT ?", (phone, limit), fetchall=True)
+    return rows or []
+
+def lead_task_add(phone: str, user_id: int, text: str, due_at: str):
+    execute_query("INSERT INTO lead_tasks (phone, user_id, text, due_at, done) VALUES (?, ?, ?, ?, 0)", (phone, user_id, (text or "")[:500], due_at))
+
+def lead_tasks_list(phone: str, done_only: bool = False):
+    cond = "phone = ?" + (" AND done = 1" if done_only else " AND done = 0")
+    rows = execute_query(f"SELECT id, text, due_at FROM lead_tasks WHERE {cond} ORDER BY due_at ASC", (phone,), fetchall=True)
+    return rows or []
+
+def lead_tasks_due_soon(minutes: int = 15):
+    """Задачи, у которых due_at через <= minutes минут (напоминание)."""
+    now = datetime.now()
+    end = (now + timedelta(minutes=minutes)).strftime("%Y-%m-%d %H:%M")
+    now_str = now.strftime("%Y-%m-%d %H:%M")
+    rows = execute_query(
+        "SELECT id, phone, user_id, text, due_at FROM lead_tasks WHERE done = 0 AND due_at IS NOT NULL AND due_at <= ? AND due_at >= ? ORDER BY due_at",
+        (end, now_str), fetchall=True)
+    return rows or []
+
+def lead_task_mark_done(task_id: int):
+    execute_query("UPDATE lead_tasks SET done = 1 WHERE id = ?", (task_id,))
+
 def build_lead_card(phone: str, can_reassign: bool = False) -> tuple:
     """Возвращает (текст карточки, InlineKeyboardMarkup). can_reassign — показывать кнопку Переназначить."""
     row = execute_query(
-        "SELECT name, status, manager_id, touches, last_touch, direction FROM leads WHERE phone = ?",
+        "SELECT name, status, manager_id, touches, last_touch, direction, COALESCE(source,'—') FROM leads WHERE phone = ?",
         (phone,),
         fetchone=True,
     )
     if not row:
         return "Лид не найден.", None
-    name, status, mgr_id, touches, last_touch, direction = row[0], row[1], row[2], row[3], row[4], (row[5] or "biz")
+    name, status, mgr_id, touches, last_touch, direction, source = row[0], row[1], row[2], row[3], row[4], (row[5] or "biz"), (row[6] if len(row) > 6 else "—")
     mgr_fio = "—"
     if mgr_id:
         u = execute_query("SELECT fio FROM users WHERE user_id = ?", (mgr_id,), fetchone=True)
@@ -413,6 +381,7 @@ def build_lead_card(phone: str, can_reassign: bool = False) -> tuple:
         f"👤 <b>{name or phone}</b>\n"
         f"📞 {phone}\n"
         f"📂 {direction_label} · Статус: {status or '—'}\n"
+        f"🏷 Источник: {source}\n"
         f"👔 Менеджер: {mgr_fio}\n"
         f"📊 Касания: {touches or 0} · Последний контакт: {lt}"
     )
@@ -420,6 +389,10 @@ def build_lead_card(phone: str, can_reassign: bool = False) -> tuple:
     kb.button(text="✉️ Написать", callback_data=f"wlead_{phone[:30]}")
     kb.button(text="📞 Позвонить", callback_data=f"call_{phone[:30]}")
     kb.button(text="📜 История", callback_data=f"hist_{phone[:30]}")
+    kb.button(text="📝 Заметка", callback_data=f"note_{phone[:30]}")
+    kb.button(text="⏰ Задача", callback_data=f"task_{phone[:30]}")
+    kb.button(text="📋 Задачи", callback_data=f"tasks_{phone[:30]}")
+    kb.button(text="🏷 Источник", callback_data=f"src_{phone[:30]}")
     if can_reassign:
         kb.button(text="🔄 Переназначить", callback_data=f"re_{phone[:30]}")
     kb.adjust(2)
@@ -497,10 +470,6 @@ async def _send_wa_text(api_url, token, chat_id, text):
 
 # Текст напоминания тем, кому не ответили больше 24 ч (таджикский)
 REMINDER_24H_TEXT = "Салом, узр хохиш зиёд барои шуморо бе чавоб мондан, хохиш мекунем якбори дигар саволатонро такрор кунед!"
-REMINDER_24H_HOURS = 24
-REMINDER_24H_WINDOW_HOURS = 48  # следующий ответ в течение 48ч после напоминания = лид на доработку
-DOCTOR_LIMITS = {"assistant": 10, "ganchina": 5}  # лимиты записей к врачам на день
-CHATTING_IDLE_MINUTES = 20  # после этого бот напоминает: «Завершите диалог, если закончили»
 
 # --- МОНИТОРИНГ: два инстанса параллельно ---
 async def _process_wa_instance(instance_name, base_url, instance_id, token):
@@ -671,7 +640,7 @@ async def _process_wa_instance(instance_name, base_url, instance_id, token):
                             now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             execute_query("UPDATE users SET is_busy=1 WHERE user_id=?", (target,))
                             execute_query(
-                                "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at) VALUES (?, ?, 'active', ?, ?, 1, ?, ?)",
+                                "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at, source) VALUES (?, ?, 'active', ?, ?, 1, ?, ?, 'WhatsApp')",
                                 (phone, c_name, target, now_iso, instance_name, now_iso),
                             )
                             kb = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone[:30]}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone[:30]}").adjust(2).as_markup()
@@ -683,7 +652,7 @@ async def _process_wa_instance(instance_name, base_url, instance_id, token):
                         else:
                             now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             execute_query(
-                                "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at) VALUES (?, ?, 'pending', NULL, ?, 1, ?, ?)",
+                                "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at, source) VALUES (?, ?, 'pending', NULL, ?, 1, ?, ?, 'WhatsApp')",
                                 (phone, c_name, now_iso, instance_name, now_iso),
                             )
                             logging.warning("biz: all busy, lead %s in queue (first message)", phone)
@@ -708,7 +677,7 @@ async def _process_wa_instance(instance_name, base_url, instance_id, token):
                             now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             execute_query("UPDATE users SET is_busy=1 WHERE user_id=?", (target,))
                             execute_query(
-                                "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at) VALUES (?, ?, 'active', ?, ?, 1, ?, ?)",
+                                "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at, source) VALUES (?, ?, 'active', ?, ?, 1, ?, ?, 'WhatsApp')",
                                 (phone, c_name, target, now_iso, instance_name, now_iso),
                             )
                             kb = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone[:30]}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone[:30]}").adjust(2).as_markup()
@@ -722,7 +691,7 @@ async def _process_wa_instance(instance_name, base_url, instance_id, token):
                         else:
                             now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             execute_query(
-                                "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at) VALUES (?, ?, 'pending', NULL, ?, 1, ?, ?)",
+                                "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at, source) VALUES (?, ?, 'pending', NULL, ?, 1, ?, ?, 'WhatsApp')",
                                 (phone, c_name, now_iso, instance_name, now_iso),
                             )
                             logging.warning("%s: all busy, lead %s in queue (pending)", instance_name, phone)
@@ -814,6 +783,23 @@ async def job_chatting_idle():
         except Exception as e:
             logging.exception("job_chatting_idle: %s", e)
 
+async def job_tasks_reminder():
+    """Напоминания по задачам: задачи с due_at в ближайшие 15 минут — отправить уведомление менеджеру."""
+    while True:
+        try:
+            await asyncio.sleep(120)
+            rows = lead_tasks_due_soon(15)
+            for (tid, phone, user_id, text, due_at) in (rows or []):
+                try:
+                    row = execute_query("SELECT name FROM leads WHERE phone = ?", (phone,), fetchone=True)
+                    name = (row[0] if row else phone)
+                    await bot.send_message(user_id, f"⏰ <b>Напоминание</b>\nЛид: {name} ({phone})\nЗадача: {text}\nСрок: {due_at}", parse_mode="HTML")
+                    lead_task_mark_done(tid)
+                except Exception as e:
+                    logging.warning("task_reminder to %s: %s", user_id, e)
+        except Exception as e:
+            logging.exception("job_tasks_reminder: %s", e)
+
 # --- ХЕНДЛЕРЫ ---
 @dp.message(Command("start"))
 async def start(m: types.Message, state: FSMContext):
@@ -847,23 +833,28 @@ async def cmd_reset_user(m: types.Message):
 @dp.callback_query(F.data.startswith("cl_") | F.data.startswith("f_"))
 async def closing(c: types.CallbackQuery, state: FSMContext):
     p = c.data.split("_")[-1]
+    full_phone = get_lead_phone_by_prefix(p) or p
+    phone_for_tel = "+" + "".join(c for c in str(full_phone) if c.isdigit())
     if "cl_" in c.data:
-        direction = get_lead_direction(p)
+        direction = get_lead_direction(full_phone)
         if direction == 'med':
             kb = InlineKeyboardBuilder()
+            kb.button(text=f"📞 Набрать {phone_for_tel}", url=f"tel:{phone_for_tel}")
             kb.button(text="❌ Отказ", callback_data=f"med_r_{p}")
             kb.button(text="⏳ Подумает", callback_data=f"med_t_{p}")
             kb.button(text="💰 Оплатил", callback_data=f"med_p_{p}")
             kb.button(text="🚫 НЕ ОТВЕЧАЮТ", callback_data=f"med_n_{p}")
             kb.adjust(1)
-            await c.message.answer("Итог звонка:", reply_markup=kb.as_markup())
+            await c.message.answer("Итог звонка (нажмите «Набрать» — откроется набор номера в телефоне):", reply_markup=kb.as_markup())
         else:
             kb = InlineKeyboardBuilder()
+            kb.button(text=f"📞 Набрать {phone_for_tel}", url=f"tel:{phone_for_tel}")
             kb.button(text="💰 ОПЛАТИЛ", callback_data=f"f_s_{p}")
             kb.button(text="⏳ ДУМАЕТ", callback_data=f"f_t_{p}")
             kb.button(text="❌ ОТКАЗ", callback_data=f"f_r_{p}")
             kb.button(text="🚫 НЕ ОТВЕТИЛ", callback_data=f"f_n_{p}")
-            await c.message.answer("Итог звонка:", reply_markup=kb.adjust(1).as_markup())
+            kb.adjust(1)
+            await c.message.answer("Итог звонка (нажмите «Набрать» — откроется набор номера в телефоне):", reply_markup=kb.as_markup())
     elif "f_" in c.data:
         res = c.data.split("_")[1]
         if res == 'n':
@@ -905,7 +896,8 @@ async def owner_biz(m: types.Message, state: FSMContext):
 
 @dp.message(F.text == "◀ Назад")
 @dp.message(F.text == "◀ Назад в меню")
-async def back_main(m: types.Message):
+async def back_main(m: types.Message, state: FSMContext):
+    await state.clear()
     await m.answer("Главное меню", reply_markup=get_main_menu(m.from_user.id))
 
 # --- Бизнес: статистика (только для владельца/админа в контексте бизнеса) ---
@@ -1277,17 +1269,20 @@ async def lead_search_query(m: types.Message, state: FSMContext):
         label = f"{name or phone} — {status or '?'}"
         if len(label) > 35:
             label = label[:32] + "..."
-        cb = f"card_{phone}"[:64]
+        cb = f"card_{phone[:30]}"
         kb.button(text=label, callback_data=cb)
     kb.adjust(1)
     await m.answer("Выберите лид:", reply_markup=kb.as_markup())
 
 @dp.callback_query(F.data.startswith("card_"))
 async def lead_card_show(c: types.CallbackQuery):
-    phone = c.data[5:]
-    if not phone:
+    phone_prefix = c.data[5:].strip()
+    if not phone_prefix:
         await c.answer()
         return
+    phone = get_lead_phone_by_prefix(phone_prefix)
+    if not phone:
+        phone = phone_prefix
     can, _ = _can_search_leads(c.from_user.id)
     if not can:
         await c.answer("Доступ запрещён.")
@@ -1302,20 +1297,21 @@ async def lead_card_write(c: types.CallbackQuery, state: FSMContext):
     if not phone:
         await c.answer()
         return
+    full_phone = get_lead_phone_by_prefix(phone) or phone
     can, _ = _can_search_leads(c.from_user.id)
     if not can:
         await c.answer("Доступ запрещён.")
         return
-    await state.update_data(target=phone, new_chat_sphere=get_lead_direction(phone))
+    await state.update_data(target=full_phone, new_chat_sphere=get_lead_direction(full_phone))
     await state.set_state(Form.waiting_for_reply)
-    row = execute_query("SELECT name FROM leads WHERE phone = ?", (phone,), fetchone=True)
-    name = row[0] if row else phone
+    row = execute_query("SELECT name FROM leads WHERE phone = ?", (full_phone,), fetchone=True)
+    name = row[0] if row else full_phone
     await c.message.answer(
-        f"💬 <b>Диалог с {name}</b> ({phone})\n\nОтправляйте текст, голос, фото, видео — всё уйдёт в WA. По окончании нажмите «Завершить диалог».",
+        f"💬 <b>Диалог с {name}</b> ({full_phone})\n\nОтправляйте текст, голос, фото, видео — всё уйдёт в WA. По окончании нажмите «Завершить диалог».",
         reply_markup=get_med_finish_dialog_kb(),
         parse_mode="HTML",
     )
-    events = execute_query("SELECT event_type, event_data, created_at FROM lead_events WHERE phone = ? ORDER BY id DESC LIMIT 8", (phone,), fetchall=True)
+    events = execute_query("SELECT event_type, event_data, created_at FROM lead_events WHERE phone = ? ORDER BY id DESC LIMIT 8", (full_phone,), fetchall=True)
     if events:
         lines = []
         for et, data, created in reversed(events):
@@ -1353,6 +1349,159 @@ async def lead_card_history(c: types.CallbackQuery):
         label = {"incoming": "📩 Входящее", "outgoing": "📤 Исходящее", "status_change": "🔄 Статус", "manager_change": "👤 Менеджер"}.get(et, et)
         lines.append(f"{created} · {label}: {data[:80]}" if data else f"{created} · {label}")
     await c.message.answer("📜 История по лиду:\n\n" + "\n".join(lines))
+    await c.answer()
+
+@dp.callback_query(F.data.startswith("note_"))
+async def lead_note_start(c: types.CallbackQuery, state: FSMContext):
+    phone = get_lead_phone_by_prefix(c.data[5:].strip()) or c.data[5:].strip()
+    if not phone:
+        await c.answer()
+        return
+    can, _ = _can_search_leads(c.from_user.id)
+    if not can:
+        await c.answer("Доступ запрещён.")
+        return
+    await state.update_data(note_phone=phone)
+    await state.set_state(Form.lead_note_text)
+    await c.message.answer("📝 Введите текст заметки к лиду:")
+    await c.answer()
+
+@dp.message(Form.lead_note_text)
+async def lead_note_done(m: types.Message, state: FSMContext):
+    d = await state.get_data()
+    phone = d.get("note_phone")
+    if not phone:
+        await state.clear()
+        return
+    text = (m.text or "").strip() or "—"
+    lead_note_add(phone, m.from_user.id, text)
+    await state.clear()
+    notes = lead_notes_list(phone, 3)
+    msg = "✅ Заметка добавлена."
+    if notes:
+        msg += "\n\nПоследние заметки:\n" + "\n".join(f"{n[2]} — {n[1][:50]}" for n in notes)
+    await m.answer(msg[:2000])
+    text_card, kbd = build_lead_card(phone, _can_search_leads(m.from_user.id)[0])
+    await m.answer(text_card, reply_markup=kbd, parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("task_"))
+async def lead_task_start(c: types.CallbackQuery, state: FSMContext):
+    phone = get_lead_phone_by_prefix(c.data[5:].strip()) or c.data[5:].strip()
+    if not phone:
+        await c.answer()
+        return
+    can, _ = _can_search_leads(c.from_user.id)
+    if not can:
+        await c.answer("Доступ запрещён.")
+        return
+    await state.update_data(task_phone=phone)
+    await state.set_state(Form.lead_task_text)
+    await c.message.answer("⏰ Введите текст задачи (например: Перезвонить):")
+    await c.answer()
+
+@dp.message(Form.lead_task_text)
+async def lead_task_text_done(m: types.Message, state: FSMContext):
+    d = await state.get_data()
+    phone = d.get("task_phone")
+    if not phone:
+        await state.clear()
+        return
+    await state.update_data(task_text=(m.text or "").strip() or "Задача")
+    await state.set_state(Form.lead_task_due)
+    await m.answer("Введите когда напомнить (например: 2ч или 2026-02-26 14:00):")
+
+@dp.message(Form.lead_task_due)
+async def lead_task_due_done(m: types.Message, state: FSMContext):
+    d = await state.get_data()
+    phone = d.get("task_phone")
+    text = d.get("task_text", "Задача")
+    if not phone:
+        await state.clear()
+        return
+    raw = (m.text or "").strip()
+    due_at = None
+    try:
+        if raw.endswith("ч") or raw.endswith("ч."):
+            h = int("".join(c for c in raw if c.isdigit()) or "0")
+            due_at = (datetime.now() + timedelta(hours=h)).strftime("%Y-%m-%d %H:%M")
+        elif raw.endswith("м") or raw.endswith("м.") or "мин" in raw:
+            mins = int("".join(c for c in raw if c.isdigit()) or "0")
+            due_at = (datetime.now() + timedelta(minutes=mins)).strftime("%Y-%m-%d %H:%M")
+        else:
+            due_at = datetime.strptime(raw[:16], "%Y-%m-%d %H:%M").strftime("%Y-%m-%d %H:%M")
+    except Exception:
+        due_at = (datetime.now() + timedelta(hours=2)).strftime("%Y-%m-%d %H:%M")
+    lead_task_add(phone, m.from_user.id, text, due_at)
+    await state.clear()
+    await m.answer(f"✅ Задача добавлена. Напоминание в {due_at}.")
+    text_card, kbd = build_lead_card(phone, _can_search_leads(m.from_user.id)[0])
+    await m.answer(text_card, reply_markup=kbd, parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("tasks_"))
+async def lead_tasks_list_cb(c: types.CallbackQuery):
+    phone = get_lead_phone_by_prefix(c.data[6:].strip()) or c.data[6:].strip()
+    if not phone:
+        await c.answer()
+        return
+    can, _ = _can_search_leads(c.from_user.id)
+    if not can:
+        await c.answer("Доступ запрещён.")
+        return
+    tasks = lead_tasks_list(phone)
+    if not tasks:
+        await c.answer("Нет активных задач по этому лиду.")
+        return
+    lines = []
+    kb = InlineKeyboardBuilder()
+    for tid, ttext, tdue in tasks:
+        lines.append(f"⏰ {tdue} — {ttext[:40]}")
+        kb.button(text=f"✓ {ttext[:25]}", callback_data=f"taskdone_{phone[:30]}_{tid}")
+    kb.adjust(1)
+    await c.message.answer("📋 Задачи по лиду:\n\n" + "\n".join(lines), reply_markup=kb.as_markup())
+    await c.answer()
+
+@dp.callback_query(F.data.startswith("taskdone_"))
+async def lead_task_done_cb(c: types.CallbackQuery):
+    parts = c.data.split("_")
+    if len(parts) < 3:
+        await c.answer()
+        return
+    try:
+        tid = int(parts[2])
+    except ValueError:
+        await c.answer()
+        return
+    lead_task_mark_done(tid)
+    await c.message.edit_text(c.message.text + "\n\n✅ Отмечено выполненным.")
+    await c.answer()
+
+@dp.callback_query(F.data.startswith("src_"))
+async def lead_source_choose(c: types.CallbackQuery):
+    phone = get_lead_phone_by_prefix(c.data[4:].strip()) or c.data[4:].strip()
+    if not phone:
+        await c.answer()
+        return
+    can, _ = _can_search_leads(c.from_user.id)
+    if not can:
+        await c.answer("Доступ запрещён.")
+        return
+    kb = InlineKeyboardBuilder()
+    for label, key in [("WhatsApp", "WhatsApp"), ("Сайт", "Сайт"), ("Реклама", "Реклама")]:
+        kb.button(text=label, callback_data=f"srcset_{phone[:30]}_{key[:20]}")
+    kb.adjust(1)
+    await c.message.answer("Выберите источник лида:", reply_markup=kb.as_markup())
+    await c.answer()
+
+@dp.callback_query(F.data.startswith("srcset_"))
+async def lead_source_set(c: types.CallbackQuery):
+    parts = c.data.split("_", 2)
+    if len(parts) < 3:
+        await c.answer()
+        return
+    phone = get_lead_phone_by_prefix(parts[1]) or parts[1]
+    source = parts[2].replace("_", " ").strip()
+    execute_query("UPDATE leads SET source = ? WHERE phone = ?", (source, phone))
+    await c.message.edit_text(f"✅ Источник установлен: {source}")
     await c.answer()
 
 @dp.callback_query(F.data.startswith("re_"))
@@ -1520,20 +1669,24 @@ async def reply_done(m: types.Message, state: FSMContext):
             return
         if sphere == 'med' and u[1] == 'med':
             kb = InlineKeyboardBuilder()
-            kb.button(text="❌ Отказ", callback_data=f"med_r_{target}")
-            kb.button(text="⏳ Подумает", callback_data=f"med_t_{target}")
-            kb.button(text="💰 Оплатил", callback_data=f"med_p_{target}")
-            kb.button(text="🚫 НЕ ОТВЕЧАЮТ", callback_data=f"med_n_{target}")
+            phone_tel = "+" + "".join(ch for ch in str(target) if ch.isdigit())
+            kb.button(text=f"📞 Набрать {phone_tel}", url=f"tel:{phone_tel}")
+            kb.button(text="❌ Отказ", callback_data=f"med_r_{target[:30]}")
+            kb.button(text="⏳ Подумает", callback_data=f"med_t_{target[:30]}")
+            kb.button(text="💰 Оплатил", callback_data=f"med_p_{target[:30]}")
+            kb.button(text="🚫 НЕ ОТВЕЧАЮТ", callback_data=f"med_n_{target[:30]}")
             kb.adjust(1)
-            outcome_msg = await m.answer("Итог диалога:", reply_markup=kb.as_markup())
+            outcome_msg = await m.answer("Итог диалога (нажмите «Набрать» — откроется набор в телефоне):", reply_markup=kb.as_markup())
         else:
             kb = InlineKeyboardBuilder()
-            kb.button(text="💰 ОПЛАТИЛ", callback_data=f"f_s_{target}")
-            kb.button(text="⏳ ДУМАЕТ", callback_data=f"f_t_{target}")
-            kb.button(text="❌ ОТКАЗ", callback_data=f"f_r_{target}")
-            kb.button(text="🚫 НЕ ОТВЕТИЛ", callback_data=f"f_n_{target}")
+            phone_tel = "+" + "".join(ch for ch in str(target) if ch.isdigit())
+            kb.button(text=f"📞 Набрать {phone_tel}", url=f"tel:{phone_tel}")
+            kb.button(text="💰 ОПЛАТИЛ", callback_data=f"f_s_{target[:30]}")
+            kb.button(text="⏳ ДУМАЕТ", callback_data=f"f_t_{target[:30]}")
+            kb.button(text="❌ ОТКАЗ", callback_data=f"f_r_{target[:30]}")
+            kb.button(text="🚫 НЕ ОТВЕТИЛ", callback_data=f"f_n_{target[:30]}")
             kb.adjust(1)
-            outcome_msg = await m.answer("Итог диалога:", reply_markup=kb.as_markup())
+            outcome_msg = await m.answer("Итог диалога (нажмите «Набрать» — откроется набор в телефоне):", reply_markup=kb.as_markup())
         await state.update_data(outcome_message_id=outcome_msg.message_id, c_phone=target)
         return
     await send_to_wa(target, m, sphere=sphere)
@@ -1561,20 +1714,24 @@ async def finish_dialog_fallback(m: types.Message, state: FSMContext):
         return
     if sphere == 'med' and u[1] == 'med':
         kb = InlineKeyboardBuilder()
-        kb.button(text="❌ Отказ", callback_data=f"med_r_{target}")
-        kb.button(text="⏳ Подумает", callback_data=f"med_t_{target}")
-        kb.button(text="💰 Оплатил", callback_data=f"med_p_{target}")
-        kb.button(text="🚫 НЕ ОТВЕЧАЮТ", callback_data=f"med_n_{target}")
+        phone_tel = "+" + "".join(ch for ch in str(target) if ch.isdigit())
+        kb.button(text=f"📞 Набрать {phone_tel}", url=f"tel:{phone_tel}")
+        kb.button(text="❌ Отказ", callback_data=f"med_r_{target[:30]}")
+        kb.button(text="⏳ Подумает", callback_data=f"med_t_{target[:30]}")
+        kb.button(text="💰 Оплатил", callback_data=f"med_p_{target[:30]}")
+        kb.button(text="🚫 НЕ ОТВЕЧАЮТ", callback_data=f"med_n_{target[:30]}")
         kb.adjust(1)
-        await m.answer("Итог диалога:", reply_markup=kb.as_markup())
+        await m.answer("Итог диалога (нажмите «Набрать» — откроется набор в телефоне):", reply_markup=kb.as_markup())
     else:
         kb = InlineKeyboardBuilder()
-        kb.button(text="💰 ОПЛАТИЛ", callback_data=f"f_s_{target}")
-        kb.button(text="⏳ ДУМАЕТ", callback_data=f"f_t_{target}")
-        kb.button(text="❌ ОТКАЗ", callback_data=f"f_r_{target}")
-        kb.button(text="🚫 НЕ ОТВЕТИЛ", callback_data=f"f_n_{target}")
+        phone_tel = "+" + "".join(ch for ch in str(target) if ch.isdigit())
+        kb.button(text=f"📞 Набрать {phone_tel}", url=f"tel:{phone_tel}")
+        kb.button(text="💰 ОПЛАТИЛ", callback_data=f"f_s_{target[:30]}")
+        kb.button(text="⏳ ДУМАЕТ", callback_data=f"f_t_{target[:30]}")
+        kb.button(text="❌ ОТКАЗ", callback_data=f"f_r_{target[:30]}")
+        kb.button(text="🚫 НЕ ОТВЕТИЛ", callback_data=f"f_n_{target[:30]}")
         kb.adjust(1)
-        await m.answer("Итог диалога:", reply_markup=kb.as_markup())
+        await m.answer("Итог диалога (нажмите «Набрать» — откроется набор в телефоне):", reply_markup=kb.as_markup())
     await state.clear()
 
 MED_PACKAGES = ["Пакет 1", "Пакет 2", "Пакет 3", "Первичка", "Вторичка"]
@@ -1599,7 +1756,8 @@ async def med_refuse_comment_done(m: types.Message, state: FSMContext):
         await state.clear()
         return
     comment = (m.text or "").strip() or "Без комментария"
-    execute_query("UPDATE leads SET status='closed', is_answered=0, comment=? WHERE phone=? AND direction='med'", (f"Отказ: {comment}", phone))
+    now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    execute_query("UPDATE leads SET status='closed', is_answered=0, comment=?, closed_at=? WHERE phone=? AND direction='med'", (f"Отказ: {comment}", now_iso, phone))
     execute_query("DELETE FROM follow_up_queue WHERE phone = ?", (phone,))
     execute_query("DELETE FROM chat_sessions WHERE user_id = ? AND phone = ?", (m.from_user.id, phone))
     log_lead_event(phone, "status_change", f"closed: Отказ — {comment[:100]}", m.from_user.id)
@@ -1698,8 +1856,8 @@ async def med_paid_sum_done(m: types.Message, state: FSMContext):
     prev_sessions = row[0] if row else 0
     new_sessions = prev_sessions + 1
     execute_query(
-        "UPDATE leads SET status='closed', is_answered=1, service=?, payment=COALESCE(payment,0)+?, payment_date=date('now'), massage_sessions=? WHERE phone=? AND direction='med'",
-        (service, s, new_sessions, phone),
+        "UPDATE leads SET status='closed', is_answered=1, service=?, payment=COALESCE(payment,0)+?, payment_date=date('now'), massage_sessions=?, closed_at=? WHERE phone=? AND direction='med'",
+        (service, s, new_sessions, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), phone),
     )
     execute_query("DELETE FROM follow_up_queue WHERE phone = ?", (phone,))
     execute_query("DELETE FROM chat_sessions WHERE user_id = ? AND phone = ?", (m.from_user.id, phone))
@@ -1737,7 +1895,11 @@ async def cl_fin(m: types.Message, state: FSMContext):
     d = await state.get_data()
     st = "thinking" if d['c_status'] == 't' else "closed"
     ans = 1 if d['c_status'] in ['s', 't', 'r'] else 0
-    execute_query("UPDATE leads SET status=?, sphere=?, comment=?, is_answered=? WHERE phone=?", (st, d['c_sphere'], m.text, ans, d['c_phone']))
+    if st == "closed":
+        now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        execute_query("UPDATE leads SET status=?, sphere=?, comment=?, is_answered=?, closed_at=? WHERE phone=?", (st, d['c_sphere'], m.text, ans, now_iso, d['c_phone']))
+    else:
+        execute_query("UPDATE leads SET status=?, sphere=?, comment=?, is_answered=? WHERE phone=?", (st, d['c_sphere'], m.text, ans, d['c_phone']))
     execute_query("DELETE FROM follow_up_queue WHERE phone = ?", (d['c_phone'],))
     execute_query("DELETE FROM chat_sessions WHERE user_id = ? AND phone = ?", (m.from_user.id, d['c_phone']))
     log_lead_event(d['c_phone'], "status_change", f"{st}: {m.text[:100]}", m.from_user.id)
@@ -1807,17 +1969,24 @@ async def mgr_lists(m: types.Message):
             kb.button(text=f"👤 {n}", callback_data=f"rp_{p[:30]}")
         await m.answer(f"Ваши клиенты ({m.text}):", reply_markup=kb.adjust(1).as_markup())
 
-@dp.message(F.text.contains("ЛИДЫ"))
+@dp.message(F.text.in_(["🟢 ВКЛ ЛИДЫ", "🔴 ВЫКЛ ЛИДЫ"]))
 async def tgl(m: types.Message):
+    """Глобальное вкл/выкл раздачи лидов по направлению бизнес. Только владелец."""
+    if not is_owner(m.from_user.id):
+        return
     c = execute_query("SELECT value FROM settings WHERE key = 'leads_enabled'", fetchone=True)
     v = '0' if c and c[0] == '1' else '1'; execute_query("INSERT OR REPLACE INTO settings (key, value) VALUES ('leads_enabled', ?)", (v,))
     await m.answer(f"Статус: {'ВКЛ' if v=='1' else 'ВЫКЛ'}", reply_markup=get_main_menu(m.from_user.id))
 
 @dp.message(F.text == "📋 Лиды в работе")
 async def wl(m: types.Message, state: FSMContext):
+    u = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (m.from_user.id,), fetchone=True)
+    if not u:
+        return
+    role, user_sphere = u[0], u[1]
     data = await state.get_data()
-    sphere = data.get("owner_current_sphere")
-    if is_owner(m.from_user.id) and sphere == "med":
+    owner_sphere = data.get("owner_current_sphere")
+    if (is_owner(m.from_user.id) and owner_sphere == "med") or (role == 'admin' and user_sphere == 'med'):
         cond = "status IN ('active', 'chatting') AND direction = 'med' AND manager_id IS NOT NULL"
         title = "📋 <b>В РАБОТЕ (Медицина):</b>"
     else:
@@ -1839,22 +2008,30 @@ async def wl(m: types.Message, state: FSMContext):
             fio = (u[0] or str(mgr_id)) if u else str(mgr_id)
         status_label = "в диалоге" if st == "chatting" else "активен"
         lines.append(f"👤 <b>{name}</b> ({phone})\n   Ответственный: {fio} [{status_label}]")
-        kb.button(text=f"↩ Перенаправить: {name}", callback_data=f"reas_{phone}")
+        kb.button(text=f"↩ Перенаправить: {name}", callback_data=f"reas_{phone[:30]}")
     await m.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb.adjust(1).as_markup())
 
 
 @dp.callback_query(F.data.startswith("reas_"))
 async def reassign_lead_choose(c: types.CallbackQuery, state: FSMContext):
-    """Выбор менеджера для перенаправления лида."""
-    if not is_owner(c.from_user.id):
+    """Выбор менеджера для перенаправления лида. Может владелец или админ своего направления."""
+    cur = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (c.from_user.id,), fetchone=True)
+    if not cur:
         await c.answer()
         return
-    phone = c.data.replace("reas_", "")[:30]
+    role, user_sphere = cur[0], cur[1]
+    phone_prefix = c.data.replace("reas_", "").strip()
+    phone = get_lead_phone_by_prefix(phone_prefix)
+    if not phone:
+        phone = phone_prefix
     row = execute_query("SELECT name, manager_id, direction FROM leads WHERE phone = ?", (phone,), fetchone=True)
     if not row:
         await c.answer("Лид не найден.")
         return
     name, old_mgr_id, direction = row[0], row[1], (row[2] or "biz")
+    if not is_owner(c.from_user.id) and not (role == 'admin' and (user_sphere or 'biz') == direction):
+        await c.answer()
+        return
     await state.update_data(reassign_phone=phone, reassign_old_mgr=old_mgr_id, reassign_direction=direction)
     managers = get_managers_by_direction(direction)
     kb = InlineKeyboardBuilder()
@@ -1870,10 +2047,13 @@ async def reassign_lead_choose(c: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("reto_"))
 async def reassign_lead_do(c: types.CallbackQuery, state: FSMContext):
-    """Перенаправить лид другому менеджеру и удалить из чата старого."""
+    """Перенаправить лид другому менеджеру и удалить из чата старого. Может владелец или админ своего направления."""
     if not is_owner(c.from_user.id):
-        await c.answer()
-        return
+        cur = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (c.from_user.id,), fetchone=True)
+        if not cur or cur[0] != 'admin':
+            await c.answer()
+            return
+        # Проверка направления лида будет ниже после получения row
     parts = c.data.split("_")
     if len(parts) < 3:
         await c.answer()
@@ -1885,11 +2065,16 @@ async def reassign_lead_do(c: types.CallbackQuery, state: FSMContext):
         return
     phone = full_phone
     new_mgr_id = int(parts[2])
-    row = execute_query("SELECT name, manager_id FROM leads WHERE phone = ?", (phone,), fetchone=True)
+    row = execute_query("SELECT name, manager_id, direction FROM leads WHERE phone = ?", (phone,), fetchone=True)
     if not row:
         await c.answer("Лид не найден.")
         return
-    name, old_mgr_id = row[0], row[1]
+    name, old_mgr_id, lead_dir = row[0], row[1], (row[2] or "biz")
+    if not is_owner(c.from_user.id):
+        cur = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (c.from_user.id,), fetchone=True)
+        if not cur or cur[0] != 'admin' or (cur[1] or 'biz') != lead_dir:
+            await c.answer("Нет прав на перенаправление этого лида.")
+            return
     execute_query("UPDATE leads SET manager_id = ? WHERE phone = ?", (new_mgr_id, phone))
     execute_query("DELETE FROM chat_sessions WHERE user_id = ? AND phone = ?", (old_mgr_id, phone))
     if old_mgr_id:
@@ -1921,7 +2106,7 @@ async def med_load(m: types.Message):
 @dp.message(F.text == "📈 Статистика лидов")
 async def med_stats_menu(m: types.Message):
     u = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (m.from_user.id,), fetchone=True)
-    if not u or u[0] != 'owner':
+    if not u or (u[0] != 'owner' and not (u[0] == 'admin' and u[1] == 'med')):
         return
     kb = InlineKeyboardBuilder()
     kb.button(text="День", callback_data="medstat_day")
@@ -2075,10 +2260,78 @@ async def dl_med(m: types.Message):
 @dp.message(F.text == "📂 Загрузка данных")
 async def dl(m: types.Message):
     import tempfile
+    u = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (m.from_user.id,), fetchone=True)
+    if not u or (u[0] != 'owner' and not (u[0] == 'admin' and u[1] == 'biz')):
+        return
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Выгрузить всё (бизнес)", callback_data="export_biz_all")
+    kb.button(text="За период (даты)", callback_data="export_biz_period")
+    await m.answer("Выгрузка лидов бизнеса:", reply_markup=kb.adjust(1).as_markup())
+
+@dp.callback_query(F.data == "export_biz_all")
+async def export_biz_all_cb(c: types.CallbackQuery):
+    import tempfile
     path = os.path.join(tempfile.gettempdir(), "crm.xlsx")
     with sqlite3.connect(DB_PATH) as conn:
         pd.read_sql_query("SELECT * FROM leads WHERE (direction = 'biz' OR direction IS NULL)", conn).to_excel(path, index=False)
+    await c.message.answer_document(types.FSInputFile(path))
+    await c.answer()
+
+@dp.callback_query(F.data == "export_biz_period")
+async def export_biz_period_start(c: types.CallbackQuery, state: FSMContext):
+    await state.set_state(Form.export_biz_period)
+    await c.message.answer("Введите период для выгрузки (одна дата или две через пробел):\n2026-02-24\nили 2026-02-01 2026-02-24")
+    await c.answer()
+
+@dp.message(Form.export_biz_period)
+async def export_biz_period_done(m: types.Message, state: FSMContext):
+    import tempfile
+    parts = (m.text or "").strip().split()
+    try:
+        if len(parts) == 1:
+            d1 = datetime.strptime(parts[0], "%Y-%m-%d").date()
+            d2 = d1
+        elif len(parts) == 2:
+            d1 = datetime.strptime(parts[0], "%Y-%m-%d").date()
+            d2 = datetime.strptime(parts[1], "%Y-%m-%d").date()
+        else:
+            raise ValueError()
+    except ValueError:
+        await m.answer("Неверный формат. Пример: 2026-02-24 или 2026-02-01 2026-02-24")
+        return
+    if d2 < d1:
+        d1, d2 = d2, d1
+    start_str = datetime.combine(d1, datetime.min.time()).strftime("%Y-%m-%d %H:%M:%S")
+    end_str = datetime.combine(d2, datetime.max.time()).strftime("%Y-%m-%d %H:%M:%S")
+    path = os.path.join(tempfile.gettempdir(), "crm_export.xlsx")
+    with sqlite3.connect(DB_PATH) as conn:
+        pd.read_sql_query(
+            "SELECT * FROM leads WHERE (direction = 'biz' OR direction IS NULL) AND created_at BETWEEN ? AND ?",
+            (start_str, end_str), conn
+        ).to_excel(path, index=False)
     await m.answer_document(types.FSInputFile(path))
+    await m.answer(f"✅ Выгружено за период {d1} — {d2}.")
+    await state.clear()
+
+@dp.message(F.text == "⏱ Время в работе")
+async def time_in_work_report(m: types.Message):
+    u = execute_query("SELECT role FROM users WHERE user_id = ?", (m.from_user.id,), fetchone=True)
+    if not u or u[0] != 'owner':
+        return
+    lines = ["⏱ <b>Среднее время в работе</b> (от создания лида до закрытия):\n"]
+    for direction, cond in [("Бизнес", "(direction = 'biz' OR direction IS NULL)"), ("Медицина", "direction = 'med'")]:
+        row = execute_query(
+            f"SELECT AVG((julianday(closed_at) - julianday(created_at)) * 24) FROM leads WHERE status = 'closed' AND closed_at IS NOT NULL AND created_at IS NOT NULL AND {cond}",
+            (), fetchone=True)
+        avg_h = (row[0] if row and row[0] is not None else None) or 0
+        if avg_h < 24:
+            lines.append(f"▪️ {direction}: {round(avg_h, 1)} ч")
+        else:
+            lines.append(f"▪️ {direction}: {round(avg_h / 24, 1)} дн")
+    cnt_biz = execute_query("SELECT COUNT(*) FROM leads WHERE status = 'closed' AND closed_at IS NOT NULL AND created_at IS NOT NULL AND (direction = 'biz' OR direction IS NULL)", (), fetchone=True)[0] or 0
+    cnt_med = execute_query("SELECT COUNT(*) FROM leads WHERE status = 'closed' AND closed_at IS NOT NULL AND created_at IS NOT NULL AND direction = 'med'", (), fetchone=True)[0] or 0
+    lines.append(f"\n(по {cnt_biz} и {cnt_med} закрытым лидам)")
+    await m.answer("\n".join(lines), parse_mode="HTML")
 
 @dp.message(F.text == "💰 Приход")
 async def med_income_menu(m: types.Message):
@@ -2122,8 +2375,8 @@ async def toggle_admin_self_leads(m: types.Message):
 
 @dp.message(F.text == "🎯 План/KPI")
 async def med_plan_kpi(m: types.Message):
-    u = execute_query("SELECT role FROM users WHERE user_id = ?", (m.from_user.id,), fetchone=True)
-    if not u or u[0] != 'owner':
+    u = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (m.from_user.id,), fetchone=True)
+    if not u or (u[0] != 'owner' and not (u[0] == 'admin' and u[1] == 'med')):
         return
     st = execute_query("SELECT user_id, fio, plan FROM users WHERE role='manager' AND sphere='med'", fetchall=True)
     txt = "🎯 <b>План/KPI (Медицина)</b>\n\nПоказатели: План, Дозвон, Касания.\n\n"
@@ -2419,7 +2672,7 @@ async def med_extend_done(m: types.Message, state: FSMContext):
     row = execute_query("SELECT massage_sessions FROM leads WHERE phone = ? AND direction = 'med'", (phone,), fetchone=True)
     if not row:
         now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        execute_query("INSERT INTO leads (phone, name, status, manager_id, direction, massage_sessions, created_at, last_touch) VALUES (?, 'Пациент', 'active', ?, 'med', 1, ?, ?)", (phone, get_first_owner_id(), now_iso, now_iso))
+        execute_query("INSERT INTO leads (phone, name, status, manager_id, direction, massage_sessions, created_at, last_touch, source) VALUES (?, 'Пациент', 'active', ?, 'med', 1, ?, ?, 'WhatsApp')", (phone, get_first_owner_id(), now_iso, now_iso))
         new_val = 1
     else:
         execute_query("UPDATE leads SET massage_sessions = COALESCE(massage_sessions, 0) + 1 WHERE phone = ? AND direction = 'med'", (phone,))
@@ -2478,6 +2731,7 @@ async def main():
     asyncio.create_task(check_wa_med())
     asyncio.create_task(job_remind_24h())
     asyncio.create_task(job_chatting_idle())
+    asyncio.create_task(job_tasks_reminder())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":

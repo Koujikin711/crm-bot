@@ -1,3 +1,7 @@
 aiogram
 pandas
 xlsxwriter
+aiohttp
+python-dotenv
+fastapi
+uvicorn[standard]
