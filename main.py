@@ -224,6 +224,8 @@ def init_db():
     except: pass
     try: execute_query("ALTER TABLE leads ADD COLUMN massage_sessions INTEGER DEFAULT 0")
     except: pass
+    try: execute_query("ALTER TABLE leads ADD COLUMN created_at TEXT")
+    except: pass
     try: execute_query("ALTER TABLE users ADD COLUMN sphere TEXT")
     except: pass
     try: execute_query("ALTER TABLE users ADD COLUMN can_receive_leads INTEGER DEFAULT 0")
@@ -655,15 +657,45 @@ async def _process_wa_instance(instance_name, base_url, instance_id, token):
                         log_lead_event(phone, "incoming", txt[:200])
                         await bot.send_message(mgr_id, f"💬 <b>{c_name}</b> ({phone}):\n{txt}", reply_markup=kb, parse_mode="HTML")
                 else:
+                    # Нет лида в базе — новый контакт
                     q = execute_query("SELECT step, instance_sphere FROM auth_queue WHERE phone = ?", (phone,), fetchone=True)
-                    if not q:
-                        if instance_name == 'med':
-                            logging.info("MED: первый контакт с %s, просим имя", phone)
-                            print(f"[CRM] MED: первый контакт с {phone}, просим имя")
+                    if instance_name == 'biz':
+                        # Бизнес: лид создаётся сразу при первом сообщении (без ожидания ФИО)
+                        c_name = _extract_wa_text(body)
+                        if c_name == '[Файл/голос]' or not c_name or c_name == '...':
+                            c_name = 'Клиент'
+                        msg = "Салом, мо дар муддати кутоҳтарин ба шумо ҷавоб медиҳем!"
+                        await _wa_post(send_msg_url, {"chatId": chat_id, "message": msg})
+                        target = get_free_manager_for_direction(instance_name)
+                        if target:
+                            now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            execute_query("UPDATE users SET is_busy=1 WHERE user_id=?", (target,))
+                            execute_query(
+                                "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at) VALUES (?, ?, 'active', ?, ?, 1, ?, ?)",
+                                (phone, c_name, target, now_iso, instance_name, now_iso),
+                            )
+                            kb = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone[:30]}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone[:30]}").adjust(2).as_markup()
+                            logging.info("biz: new lead %s -> manager %s (first message)", phone, target)
+                            try:
+                                await bot.send_message(target, f"📥 <b>НОВЫЙ ЛИД</b>\n👤 {c_name}\n📞 {phone}", reply_markup=kb, parse_mode="HTML")
+                            except Exception as e:
+                                logging.exception("send_message to manager %s failed: %s", target, e)
+                        else:
+                            now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                            execute_query(
+                                "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at) VALUES (?, ?, 'pending', NULL, ?, 1, ?, ?)",
+                                (phone, c_name, now_iso, instance_name, now_iso),
+                            )
+                            logging.warning("biz: all busy, lead %s in queue (first message)", phone)
+                    elif not q:
+                        # Медицина: первый контакт — просим имя
+                        logging.info("MED: первый контакт с %s, просим имя", phone)
+                        print(f"[CRM] MED: первый контакт с {phone}, просим имя")
                         msg = "Салом, ном ва насаби худро нависед! Мо дар муддати кутоҳтарин ба шумо ҷавоб медиҳем!"
                         await _wa_post(send_msg_url, {"chatId": chat_id, "message": msg})
                         execute_query("INSERT OR REPLACE INTO auth_queue (phone, step, instance_sphere) VALUES (?, 1, ?)", (phone, instance_name))
                     elif q[0] == 1 and (q[1] or instance_name) == instance_name:
+                        # Медицина: второе сообщение (имя) — создаём лид
                         if instance_name == 'med':
                             logging.info("MED: второе сообщение (имя) от %s, создаём лид", phone)
                             print(f"[CRM] MED: второе сообщение (имя) от {phone}, создаём лид")
@@ -671,13 +703,13 @@ async def _process_wa_instance(instance_name, base_url, instance_id, token):
                         if c_name == '[Файл/голос]':
                             c_name = 'Клиент'
                         execute_query("DELETE FROM auth_queue WHERE phone = ?", (phone,))
-                        # Один лид в одни руки: только свободный менеджер (is_busy=0 и нет active/chatting лидов).
                         target = get_free_manager_for_direction(instance_name)
                         if target:
+                            now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             execute_query("UPDATE users SET is_busy=1 WHERE user_id=?", (target,))
                             execute_query(
-                                "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction) VALUES (?, ?, 'active', ?, ?, 1, ?)",
-                                (phone, c_name, target, datetime.now(), instance_name),
+                                "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at) VALUES (?, ?, 'active', ?, ?, 1, ?, ?)",
+                                (phone, c_name, target, now_iso, instance_name, now_iso),
                             )
                             kb = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone[:30]}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone[:30]}").adjust(2).as_markup()
                             logging.info("%s: new lead %s -> manager %s", instance_name, phone, target)
@@ -688,10 +720,10 @@ async def _process_wa_instance(instance_name, base_url, instance_id, token):
                                 logging.exception("send_message to manager %s failed: %s", target, e)
                                 print(f"[CRM] Ошибка отправки карточки менеджеру {target}: {e}")
                         else:
-                            # Все заняты — лид только в очереди. Владельцу не шлём — лид придёт освободившемуся менеджеру.
+                            now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             execute_query(
-                                "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction) VALUES (?, ?, 'pending', NULL, ?, 1, ?)",
-                                (phone, c_name, datetime.now(), instance_name),
+                                "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at) VALUES (?, ?, 'pending', NULL, ?, 1, ?, ?)",
+                                (phone, c_name, now_iso, instance_name, now_iso),
                             )
                             logging.warning("%s: all busy, lead %s in queue (pending)", instance_name, phone)
                             print(f"[CRM] {instance_name}: все заняты, лид {phone} в очереди")
@@ -959,12 +991,12 @@ async def biz_leads_flow_cb(c: types.CallbackQuery, state: FSMContext):
     end_str = end.strftime("%Y-%m-%d %H:%M:%S")
     cond = " (direction = 'biz' OR direction IS NULL) "
     total = execute_query(
-        f"SELECT COUNT(*) FROM leads WHERE {cond} AND last_touch BETWEEN ? AND ?",
+        f"SELECT COUNT(*) FROM leads WHERE {cond} AND created_at BETWEEN ? AND ?",
         (start_str, end_str),
         fetchone=True,
     )[0] or 0
     processed = execute_query(
-        f"SELECT COUNT(*) FROM leads WHERE {cond} AND is_answered = 1 AND last_touch BETWEEN ? AND ?",
+        f"SELECT COUNT(*) FROM leads WHERE {cond} AND is_answered = 1 AND created_at BETWEEN ? AND ?",
         (start_str, end_str),
         fetchone=True,
     )[0] or 0
@@ -1005,12 +1037,12 @@ async def biz_leads_flow_custom_period(m: types.Message, state: FSMContext):
     end_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")
     cond = " (direction = 'biz' OR direction IS NULL) "
     total = execute_query(
-        f"SELECT COUNT(*) FROM leads WHERE {cond} AND last_touch BETWEEN ? AND ?",
+        f"SELECT COUNT(*) FROM leads WHERE {cond} AND created_at BETWEEN ? AND ?",
         (start_str, end_str),
         fetchone=True,
     )[0] or 0
     processed = execute_query(
-        f"SELECT COUNT(*) FROM leads WHERE {cond} AND is_answered = 1 AND last_touch BETWEEN ? AND ?",
+        f"SELECT COUNT(*) FROM leads WHERE {cond} AND is_answered = 1 AND created_at BETWEEN ? AND ?",
         (start_str, end_str),
         fetchone=True,
     )[0] or 0
@@ -2145,12 +2177,12 @@ async def med_leads_flow_cb(c: types.CallbackQuery, state: FSMContext):
     end_str = end.strftime("%Y-%m-%d %H:%M:%S")
     cond = " direction = 'med' "
     total = execute_query(
-        f"SELECT COUNT(*) FROM leads WHERE {cond} AND last_touch BETWEEN ? AND ?",
+        f"SELECT COUNT(*) FROM leads WHERE {cond} AND created_at BETWEEN ? AND ?",
         (start_str, end_str),
         fetchone=True,
     )[0] or 0
     processed = execute_query(
-        f"SELECT COUNT(*) FROM leads WHERE {cond} AND is_answered = 1 AND last_touch BETWEEN ? AND ?",
+        f"SELECT COUNT(*) FROM leads WHERE {cond} AND is_answered = 1 AND created_at BETWEEN ? AND ?",
         (start_str, end_str),
         fetchone=True,
     )[0] or 0
@@ -2191,12 +2223,12 @@ async def med_leads_flow_custom_period(m: types.Message, state: FSMContext):
     end_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")
     cond = " direction = 'med' "
     total = execute_query(
-        f"SELECT COUNT(*) FROM leads WHERE {cond} AND last_touch BETWEEN ? AND ?",
+        f"SELECT COUNT(*) FROM leads WHERE {cond} AND created_at BETWEEN ? AND ?",
         (start_str, end_str),
         fetchone=True,
     )[0] or 0
     processed = execute_query(
-        f"SELECT COUNT(*) FROM leads WHERE {cond} AND is_answered = 1 AND last_touch BETWEEN ? AND ?",
+        f"SELECT COUNT(*) FROM leads WHERE {cond} AND is_answered = 1 AND created_at BETWEEN ? AND ?",
         (start_str, end_str),
         fetchone=True,
     )[0] or 0
@@ -2387,7 +2419,8 @@ async def med_extend_done(m: types.Message, state: FSMContext):
     phone = m.text.strip().replace("+", "")
     row = execute_query("SELECT massage_sessions FROM leads WHERE phone = ? AND direction = 'med'", (phone,), fetchone=True)
     if not row:
-        execute_query("INSERT INTO leads (phone, name, status, manager_id, direction, massage_sessions) VALUES (?, 'Пациент', 'active', ?, 'med', 1)", (phone, get_first_owner_id()))
+        now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        execute_query("INSERT INTO leads (phone, name, status, manager_id, direction, massage_sessions, created_at, last_touch) VALUES (?, 'Пациент', 'active', ?, 'med', 1, ?, ?)", (phone, get_first_owner_id(), now_iso, now_iso))
         new_val = 1
     else:
         execute_query("UPDATE leads SET massage_sessions = COALESCE(massage_sessions, 0) + 1 WHERE phone = ? AND direction = 'med'", (phone,))
