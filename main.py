@@ -116,7 +116,7 @@ async def try_assign_queued_lead_to_manager(manager_id: int, direction: str):
     phone, name = row[0], row[1] or phone
     execute_query("UPDATE leads SET manager_id = ?, status = 'active' WHERE phone = ?", (manager_id, phone))
     execute_query("UPDATE users SET is_busy = 1 WHERE user_id = ?", (manager_id,))
-    kb = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone}").adjust(2).as_markup()
+    kb = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone[:30]}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone[:30]}").adjust(2).as_markup()
     try:
         await bot.send_message(manager_id, f"📥 <b>Следующий лид из очереди</b>\n👤 {name}\n📞 {phone}", reply_markup=kb, parse_mode="HTML")
         logging.info("[CRM] try_assign: лид %s назначен менеджеру %s (direction=%s)", phone, manager_id, direction)
@@ -376,6 +376,20 @@ def get_managers_by_direction(direction: str):
         )
     return rows or []
 
+def get_lead_phone_by_prefix(phone_prefix: str):
+    """Вернуть полный phone из leads при точном совпадении или единственном совпадении по префиксу (для callback_data до 30 символов)."""
+    if not phone_prefix:
+        return None
+    row = execute_query("SELECT phone FROM leads WHERE phone = ?", (phone_prefix,), fetchone=True)
+    if row:
+        return row[0]
+    row = execute_query(
+        "SELECT phone FROM leads WHERE length(phone) >= ? AND substr(phone, 1, ?) = ? LIMIT 1",
+        (len(phone_prefix), len(phone_prefix), phone_prefix),
+        fetchone=True,
+    )
+    return row[0] if row else None
+
 def build_lead_card(phone: str, can_reassign: bool = False) -> tuple:
     """Возвращает (текст карточки, InlineKeyboardMarkup). can_reassign — показывать кнопку Переназначить."""
     row = execute_query(
@@ -436,9 +450,25 @@ def can_add_appointment(date_str, doctor):
     return True, None
 
 def _extract_wa_text(body):
-    if body.get('messageData', {}).get('textMessageData'):
-        return body['messageData']['textMessageData'].get('textMessage', '...')
-    if body.get('messageData', {}).get('fileMessageData'):
+    """
+    Вытащить текст из входящего сообщения WA.
+    Учитываем обычный текст, расширенный текст (ответ на сообщение) и файлы.
+    """
+    md = body.get('messageData') or {}
+    # Обычное текстовое сообщение
+    tmd = md.get('textMessageData')
+    if tmd and isinstance(tmd, dict):
+        txt = tmd.get('textMessage')
+        if txt:
+            return txt
+    # Расширенный текст (ответ/цитата сообщения, extendedTextMessageData)
+    ext = md.get('extendedTextMessageData')
+    if ext and isinstance(ext, dict):
+        txt = ext.get('text') or ext.get('description') or ext.get('caption')
+        if txt:
+            return txt
+    # Сообщение с файлом без отдельного текста
+    if md.get('fileMessageData'):
         return '[Файл/голос]'
     return '...'
 
@@ -467,7 +497,7 @@ async def _send_wa_text(api_url, token, chat_id, text):
 REMINDER_24H_TEXT = "Салом, узр хохиш зиёд барои шуморо бе чавоб мондан, хохиш мекунем якбори дигар саволатонро такрор кунед!"
 REMINDER_24H_HOURS = 24
 REMINDER_24H_WINDOW_HOURS = 48  # следующий ответ в течение 48ч после напоминания = лид на доработку
-DOCTOR_LIMITS = {"Ганчина": 10}  # лимиты записей к врачам на день
+DOCTOR_LIMITS = {"assistant": 10, "ganchina": 5}  # лимиты записей к врачам на день
 CHATTING_IDLE_MINUTES = 20  # после этого бот напоминает: «Завершите диалог, если закончили»
 
 # --- МОНИТОРИНГ: два инстанса параллельно ---
@@ -543,6 +573,7 @@ async def _process_wa_instance(instance_name, base_url, instance_id, token):
                     if not is_active or (instance_name == 'med' and is_active[1] != 'med'):
                         # Лиды НЕ идут владельцу: ставим в очередь (pending), сообщение никому не пересылаем.
                         execute_query("UPDATE leads SET manager_id = NULL, status = 'pending' WHERE phone = ?", (phone,))
+                        execute_query("DELETE FROM chat_sessions WHERE user_id = ? AND phone = ?", (mgr_id, phone))
                         await _wa_delete(delete_url + "/" + str(rid))
                         processed_this_cycle += 1
                         continue
@@ -550,6 +581,7 @@ async def _process_wa_instance(instance_name, base_url, instance_id, token):
                     session = execute_query("SELECT phone FROM chat_sessions WHERE user_id = ?", (mgr_id,), fetchone=True)
                     if session and session[0] != phone:
                         execute_query("UPDATE leads SET manager_id = NULL, status = 'pending' WHERE phone = ?", (phone,))
+                        execute_query("DELETE FROM chat_sessions WHERE user_id = ? AND phone = ?", (mgr_id, phone))
                         await _wa_delete(delete_url + "/" + str(rid))
                         processed_this_cycle += 1
                         continue
@@ -584,7 +616,7 @@ async def _process_wa_instance(instance_name, base_url, instance_id, token):
                         await asyncio.sleep(0)
                         continue
                     else:
-                        kb = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone}").adjust(2).as_markup()
+                        kb = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone[:30]}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone[:30]}").adjust(2).as_markup()
                     txt = _extract_wa_text(body) if not body.get('messageData', {}).get('fileMessageData') else '[Файл/голос]'
                     is_follow_up = False
                     rem = execute_query("SELECT reminded_at FROM reminded_24h WHERE phone = ? AND sphere = ?", (phone, instance_name), fetchone=True)
@@ -631,7 +663,7 @@ async def _process_wa_instance(instance_name, base_url, instance_id, token):
                         msg = "Салом, ном ва насаби худро нависед! Мо дар муддати кутоҳтарин ба шумо ҷавоб медиҳем!"
                         await _wa_post(send_msg_url, {"chatId": chat_id, "message": msg})
                         execute_query("INSERT OR REPLACE INTO auth_queue (phone, step, instance_sphere) VALUES (?, 1, ?)", (phone, instance_name))
-                    elif q[0] == 1 and (q[1] or 'biz') == instance_name:
+                    elif q[0] == 1 and (q[1] or instance_name) == instance_name:
                         if instance_name == 'med':
                             logging.info("MED: второе сообщение (имя) от %s, создаём лид", phone)
                             print(f"[CRM] MED: второе сообщение (имя) от {phone}, создаём лид")
@@ -647,7 +679,7 @@ async def _process_wa_instance(instance_name, base_url, instance_id, token):
                                 "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction) VALUES (?, ?, 'active', ?, ?, 1, ?)",
                                 (phone, c_name, target, datetime.now(), instance_name),
                             )
-                            kb = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone}").adjust(2).as_markup()
+                            kb = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone[:30]}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone[:30]}").adjust(2).as_markup()
                             logging.info("%s: new lead %s -> manager %s", instance_name, phone, target)
                             print(f"[CRM] {instance_name}: new lead {phone} -> manager {target}")
                             try:
@@ -804,14 +836,29 @@ async def closing(c: types.CallbackQuery, state: FSMContext):
         res = c.data.split("_")[1]
         if res == 'n':
             l_data = execute_query("SELECT touches, name FROM leads WHERE phone = ?", (p,), fetchone=True)
-            new_t = l_data[0] + 1
+            if not l_data:
+                await c.answer("Лид не найден.")
+                return
+            cur_t, lead_name = l_data[0] or 0, l_data[1] or p
+            new_t = cur_t + 1
+            execute_query("DELETE FROM chat_sessions WHERE user_id = ? AND phone = ?", (c.from_user.id, p))
             if new_t >= 7:
                 execute_query("UPDATE leads SET status='closed', touches=7, comment='Автозакрытие: 7 касаний' WHERE phone=?", (p,))
                 execute_query("UPDATE users SET is_busy=0 WHERE user_id=?", (c.from_user.id,))
-                await c.message.answer(f"🛑 Лид {l_data[1]} закрыт (7 касаний).")
+                text, kbd = build_lead_card(p)
+                await c.message.answer(text or f"🛑 Лид {lead_name} закрыт (7 касаний).", reply_markup=kbd, parse_mode="HTML")
+                await c.message.answer("Меню", reply_markup=get_main_menu(c.from_user.id))
+                u = execute_query("SELECT sphere FROM users WHERE user_id = ?", (c.from_user.id,), fetchone=True)
+                mgr_sphere = (u[0] or 'biz') if u else 'biz'
+                await try_assign_queued_lead_to_manager(c.from_user.id, mgr_sphere)
             else:
-                execute_query("UPDATE leads SET touches=?, last_touch=? WHERE phone=?", (new_t, datetime.now(), p))
-                await c.message.answer(f"🔄 Касание №{new_t} зафиксировано.")
+                # Лид уходит в дожим/ожидание и не блокирует новые лиды (статус thinking).
+                execute_query("UPDATE leads SET status='thinking', touches=?, last_touch=? WHERE phone=?", (new_t, datetime.now(), p))
+                execute_query("UPDATE users SET is_busy=0 WHERE user_id=?", (c.from_user.id,))
+                u = execute_query("SELECT sphere FROM users WHERE user_id = ?", (c.from_user.id,), fetchone=True)
+                mgr_sphere = (u[0] or 'biz') if u else 'biz'
+                await try_assign_queued_lead_to_manager(c.from_user.id, mgr_sphere)
+                await c.message.answer(f"🔄 Касание №{new_t} зафиксировано. Лид в ожидании, вам могут прийти новые лиды.")
         else:
             await state.update_data(c_phone=p, c_status=res)
             await state.set_state(Form.closing_sphere); await c.message.answer("Сфера:")
@@ -847,7 +894,7 @@ async def stats(m: types.Message):
     cond = _biz_leads_cond()
     all_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE 1=1 AND {cond.strip()}", fetchone=True)[0] or 1
     ans_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE is_answered=1 AND {cond.strip()}", fetchone=True)[0]
-    sold_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE status='closed' AND comment NOT LIKE '%Автозакрытие%' AND is_answered=1 AND {cond.strip()}", fetchone=True)[0]
+    sold_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE status='closed' AND (comment IS NULL OR comment NOT LIKE '%Автозакрытие%') AND is_answered=1 AND {cond.strip()}", fetchone=True)[0]
     c_ans = round((ans_l / all_l) * 100, 1)
     c_sale = round((sold_l / (ans_l or 1)) * 100, 1)
     msg = await m.answer(f"📊 <b>ОБЩАЯ ВОРОНКА (Бизнес)</b>\n\n📥 Лидов: {all_l}\n📞 Дозвоны: {ans_l} ({c_ans}%)\n💰 Продажи: {sold_l} ({c_sale}% из дозвонов)", parse_mode="HTML")
@@ -865,7 +912,7 @@ async def mgr_kpi(m: types.Message):
             continue
         m_all = execute_query("SELECT COUNT(*) FROM leads WHERE manager_id=? AND (direction = 'biz' OR direction IS NULL)", (mid,), fetchone=True)[0] or 1
         m_ans = execute_query("SELECT COUNT(*) FROM leads WHERE manager_id=? AND is_answered=1 AND (direction = 'biz' OR direction IS NULL)", (mid,), fetchone=True)[0]
-        m_sold = execute_query("SELECT COUNT(*) FROM leads WHERE manager_id=? AND status='closed' AND is_answered=1 AND comment NOT LIKE '%Автозакрытие%' AND (direction = 'biz' OR direction IS NULL)", (mid,), fetchone=True)[0]
+        m_sold = execute_query("SELECT COUNT(*) FROM leads WHERE manager_id=? AND status='closed' AND is_answered=1 AND (comment IS NULL OR comment NOT LIKE '%Автозакрытие%') AND (direction = 'biz' OR direction IS NULL)", (mid,), fetchone=True)[0]
         m_t = execute_query("SELECT AVG(touches) FROM leads WHERE manager_id=? AND (direction = 'biz' OR direction IS NULL)", (mid,), fetchone=True)[0] or 0
         perc = round((m_sold / (plan or 1)) * 100, 1)
         conv = round((m_ans / m_all) * 100, 1)
@@ -1291,6 +1338,11 @@ async def lead_reassign_start(c: types.CallbackQuery):
     if idx > 0 and payload[idx + 1 :].isdigit():
         phone = payload[:idx]
         new_uid = payload[idx + 1 :]
+        full_phone = get_lead_phone_by_prefix(phone)
+        if not full_phone:
+            await c.answer("Лид не найден.")
+            return
+        phone = full_phone
         row = execute_query("SELECT manager_id, direction FROM leads WHERE phone = ?", (phone,), fetchone=True)
         if row:
             old_mgr, direction = row[0], (row[1] or 'biz')
@@ -1307,7 +1359,7 @@ async def lead_reassign_start(c: types.CallbackQuery):
             u = execute_query("SELECT fio, is_busy FROM users WHERE user_id = ?", (new_uid,), fetchone=True)
             mgr_name = u[0] if u else str(new_uid)
             busy = u and u[1] == 1
-            kb = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone}").adjust(2).as_markup()
+            kb = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone[:30]}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone[:30]}").adjust(2).as_markup()
             text = f"🔄 <b>Вам переназначен лид</b>\n👤 {lead_name}\n📞 {phone}"
             if busy:
                 text += "\n\n⚠️ У вас уже есть активный лид — по возможности закройте его быстрее, чтобы взять этого."
@@ -1336,7 +1388,7 @@ async def lead_reassign_start(c: types.CallbackQuery):
         return
     kb = InlineKeyboardBuilder()
     for uid, fio in managers:
-        cb = f"re_{phone}_{uid}"[:64]
+        cb = f"re_{phone[:30]}_{uid}"
         kb.button(text=f"👤 {fio}", callback_data=cb)
     kb.adjust(1)
     await c.message.edit_text("Выберите нового менеджера:", reply_markup=kb.as_markup())
@@ -1558,8 +1610,8 @@ async def med_end_think(c: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("med_n_"))
 async def med_end_no_answer(c: types.CallbackQuery):
     """Медицина: не ответил — +1 касание, после 7 — автозакрытие."""
-    phone = c.data[6:]
-    if len(phone) > 20:
+    phone = c.data[6:]  # "med_n_" = 6 символов
+    if len(phone) > 30:
         await c.answer()
         return
     row = execute_query("SELECT touches, name FROM leads WHERE phone = ? AND direction = 'med'", (phone,), fetchone=True)
@@ -1581,8 +1633,11 @@ async def med_end_no_answer(c: types.CallbackQuery):
         await c.message.answer("Меню", reply_markup=get_main_menu(c.from_user.id))
         await try_assign_queued_lead_to_manager(c.from_user.id, 'med')
     else:
-        execute_query("UPDATE leads SET touches=?, last_touch=? WHERE phone=? AND direction='med'", (new_t, datetime.now(), phone))
-        await c.message.edit_text(f"🔄 Касание №{new_t} зафиксировано. Не ответил.")
+        # Лид уходит в дожим/ожидание и не блокирует новые лиды (статус thinking).
+        execute_query("UPDATE leads SET status='thinking', touches=?, last_touch=? WHERE phone=? AND direction='med'", (new_t, datetime.now(), phone))
+        execute_query("UPDATE users SET is_busy=0 WHERE user_id=?", (c.from_user.id,))
+        await try_assign_queued_lead_to_manager(c.from_user.id, 'med')
+        await c.message.edit_text(f"🔄 Касание №{new_t} зафиксировано. Пациент в ожидании, вам могут прийти новые лиды.")
     await c.answer()
 
 @dp.callback_query(F.data.startswith("med_p_"))
@@ -1720,7 +1775,7 @@ async def mgr_lists(m: types.Message):
     leads = execute_query("SELECT phone, name FROM leads WHERE manager_id = ? AND status = ? AND (direction = 'biz' OR direction IS NULL)", (m.from_user.id, st_map[m.text]), fetchall=True)
     if not leads: return await m.answer("Список пуст.")
     kb = InlineKeyboardBuilder()
-    for p, n in leads: kb.button(text=f"👤 {n}", callback_data=f"rp_{p}")
+    for p, n in leads: kb.button(text=f"👤 {n}", callback_data=f"rp_{p[:30]}")
     await m.answer(f"Ваши клиенты ({m.text}):", reply_markup=kb.adjust(1).as_markup())
 
 @dp.message(F.text.contains("ЛИДЫ"))
@@ -1728,14 +1783,6 @@ async def tgl(m: types.Message):
     c = execute_query("SELECT value FROM settings WHERE key = 'leads_enabled'", fetchone=True)
     v = '0' if c and c[0] == '1' else '1'; execute_query("INSERT OR REPLACE INTO settings (key, value) VALUES ('leads_enabled', ?)", (v,))
     await m.answer(f"Статус: {'ВКЛ' if v=='1' else 'ВЫКЛ'}", reply_markup=get_main_menu(m.from_user.id))
-
-@dp.message(F.text == "📂 Загрузка данных")
-async def dl(m: types.Message):
-    import tempfile
-    path = os.path.join(tempfile.gettempdir(), "crm.xlsx")
-    with sqlite3.connect(DB_PATH) as conn:
-        pd.read_sql_query("SELECT * FROM leads WHERE (direction = 'biz' OR direction IS NULL)", conn).to_excel(path, index=False)
-    await m.answer_document(types.FSInputFile(path))
 
 @dp.message(F.text == "📋 Лиды в работе")
 async def wl(m: types.Message, state: FSMContext):
@@ -1784,7 +1831,7 @@ async def reassign_lead_choose(c: types.CallbackQuery, state: FSMContext):
     kb = InlineKeyboardBuilder()
     for uid, fio in managers:
         if uid != old_mgr_id:
-            kb.button(text=f"→ {fio}", callback_data=f"reto_{phone}_{uid}")
+            kb.button(text=f"→ {fio}", callback_data=f"reto_{phone[:30]}_{uid}")
     if not kb.buttons:
         await c.answer("Нет других менеджеров в этом направлении.")
         return
@@ -1803,6 +1850,11 @@ async def reassign_lead_do(c: types.CallbackQuery, state: FSMContext):
         await c.answer()
         return
     phone = parts[1][:30]
+    full_phone = get_lead_phone_by_prefix(phone)
+    if not full_phone:
+        await c.answer("Лид не найден.")
+        return
+    phone = full_phone
     new_mgr_id = int(parts[2])
     row = execute_query("SELECT name, manager_id FROM leads WHERE phone = ?", (phone,), fetchone=True)
     if not row:
@@ -1817,7 +1869,7 @@ async def reassign_lead_do(c: types.CallbackQuery, state: FSMContext):
             await bot.send_message(old_mgr_id, f"📤 Лид <b>{name}</b> ({phone}) перенаправлен другому менеджеру.", parse_mode="HTML")
         except Exception:
             pass
-    kb = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone}").adjust(2).as_markup()
+    kb = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone[:30]}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone[:30]}").adjust(2).as_markup()
     try:
         await bot.send_message(new_mgr_id, f"📥 <b>Лида перенаправили вам</b>\n👤 {name}\n📞 {phone}", reply_markup=kb, parse_mode="HTML")
     except Exception:
@@ -1860,9 +1912,10 @@ async def med_stats_cb(c: types.CallbackQuery):
         start = now - timedelta(days=30)
     start_str = start.strftime("%Y-%m-%d %H:%M:%S")
     cond = " direction = 'med' "
-    all_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE {cond} AND (last_touch >= ? OR payment_date >= ?)", (start_str, start_str[:10]), fetchone=True)[0] or 0
-    ans_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE {cond} AND is_answered=1", fetchone=True)[0]
-    sold_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE {cond} AND status='closed' AND is_answered=1 AND comment NOT LIKE '%Автозакрытие%'", fetchone=True)[0]
+    period_cond = " (last_touch >= ? OR payment_date >= ?) "
+    all_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE {cond} AND {period_cond}", (start_str, start_str[:10]), fetchone=True)[0] or 0
+    ans_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE {cond} AND is_answered=1 AND {period_cond}", (start_str, start_str[:10]), fetchone=True)[0]
+    sold_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE {cond} AND status='closed' AND is_answered=1 AND (comment IS NULL OR comment NOT LIKE '%Автозакрытие%') AND {period_cond}", (start_str, start_str[:10]), fetchone=True)[0]
     c_ans = round((ans_l / (all_l or 1)) * 100, 1)
     c_sale = round((sold_l / (ans_l or 1)) * 100, 1)
     await c.message.edit_text(f"📈 <b>Медицина</b> ({period})\n\nПришло: {all_l}\nОбработано (дозвон): {ans_l} ({c_ans}%)\nПродано: {sold_l} ({c_sale}%)", parse_mode="HTML")
@@ -2232,8 +2285,8 @@ async def med_my_patients(m: types.Message):
     for phone, name, st in leads:
         lbl = status_label.get(st, st)
         lines.append(f"• {name} ({phone}) — {lbl}")
-        kb.button(text=f"✍️ {name}", callback_data=f"rp_{phone}")
-        kb.button(text=f"📞 {name}", callback_data=f"cl_{phone}")
+        kb.button(text=f"✍️ {name}", callback_data=f"rp_{phone[:30]}")
+        kb.button(text=f"📞 {name}", callback_data=f"cl_{phone[:30]}")
     kb.adjust(2)
     await m.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb.as_markup())
 
@@ -2250,8 +2303,8 @@ async def med_my_records(m: types.Message):
             return
         kb = InlineKeyboardBuilder()
         for phone, name in leads:
-            kb.button(text=f"✍️ {name}", callback_data=f"rp_{phone}")
-            kb.button(text=f"📞 {name}", callback_data=f"cl_{phone}")
+            kb.button(text=f"✍️ {name}", callback_data=f"rp_{phone[:30]}")
+            kb.button(text=f"📞 {name}", callback_data=f"cl_{phone[:30]}")
         kb.adjust(2)
         await m.answer("📋 Ваши пациенты:", reply_markup=kb.as_markup())
     else:
@@ -2289,8 +2342,8 @@ async def med_dozhim(m: types.Message):
         return
     kb = InlineKeyboardBuilder()
     for phone, name in leads:
-        kb.button(text=f"👤 {name}", callback_data=f"rp_{phone}")
-        kb.button(text=f"📞 {name}", callback_data=f"cl_{phone}")
+        kb.button(text=f"👤 {name}", callback_data=f"rp_{phone[:30]}")
+        kb.button(text=f"📞 {name}", callback_data=f"cl_{phone[:30]}")
     kb.adjust(1)
     await m.answer("⏳ Дожим — ваши пациенты:", reply_markup=kb.as_markup())
 
