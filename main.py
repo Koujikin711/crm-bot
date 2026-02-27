@@ -111,12 +111,19 @@ async def try_assign_queued_lead_to_manager(manager_id: int, direction: str):
         fetchone=True,
     )
     if not row:
+        logging.info("[CRM] try_assign: нет лидов в очереди (direction=%s), менеджер %s", direction, manager_id)
         return
     phone, name = row[0], row[1] or phone
     execute_query("UPDATE leads SET manager_id = ?, status = 'active' WHERE phone = ?", (manager_id, phone))
     execute_query("UPDATE users SET is_busy = 1 WHERE user_id = ?", (manager_id,))
     kb = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone}").adjust(2).as_markup()
-    await bot.send_message(manager_id, f"📥 <b>Следующий лид из очереди</b>\n👤 {name}\n📞 {phone}", reply_markup=kb, parse_mode="HTML")
+    try:
+        await bot.send_message(manager_id, f"📥 <b>Следующий лид из очереди</b>\n👤 {name}\n📞 {phone}", reply_markup=kb, parse_mode="HTML")
+        logging.info("[CRM] try_assign: лид %s назначен менеджеру %s (direction=%s)", phone, manager_id, direction)
+    except Exception as e:
+        logging.exception("[CRM] try_assign: не удалось отправить лид менеджеру %s: %s", manager_id, e)
+        execute_query("UPDATE leads SET manager_id = NULL, status = 'pending' WHERE phone = ?", (phone,))
+        execute_query("UPDATE users SET is_busy = 0 WHERE user_id = ?", (manager_id,))
 
 def get_free_manager_for_direction(direction: str):
     """Менеджер свободен: is_busy=0 И нет лидов active/chatting за ним."""
@@ -275,7 +282,7 @@ def get_main_menu(uid):
         kb.adjust(2)
         return kb.as_markup(resize_keyboard=True)
     if role == 'manager' and sphere == 'med':
-        kb.button(text="📋 Мои записи"); kb.button(text="💰 Мои оплаты"); kb.button(text="⏳ Дожим"); kb.button(text="📌 Доработать")
+        kb.button(text="👥 Мои Пациенты"); kb.button(text="📋 Мои записи"); kb.button(text="💰 Мои оплаты"); kb.button(text="⏳ Дожим"); kb.button(text="📌 Доработать")
         kb.adjust(2)
         return kb.as_markup(resize_keyboard=True)
     # Бизнес: admin или manager
@@ -2204,6 +2211,32 @@ async def med_appoint_phone_ok(m: types.Message, state: FSMContext):
     execute_query("INSERT INTO appointments (date, time, doctor, phone) VALUES (?, ?, ?, ?)", (date_str, data['med_time'], doctor, phone))
     await m.answer(f"✅ Запись: {date_str} {data['med_time']}, {doctor}, {phone}")
     await state.clear()
+
+@dp.message(F.text == "👥 Мои Пациенты")
+async def med_my_patients(m: types.Message):
+    """Менеджер медицины: все пациенты, которые ещё не обработаны (не закрыты)."""
+    u = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (m.from_user.id,), fetchone=True)
+    if not u or u[0] != 'manager' or u[1] != 'med':
+        return
+    leads = execute_query(
+        "SELECT phone, name, status FROM leads WHERE manager_id = ? AND direction = 'med' AND status IN ('active', 'chatting', 'thinking') ORDER BY last_touch DESC",
+        (m.from_user.id,),
+        fetchall=True,
+    )
+    if not leads:
+        await m.answer("Нет необработанных пациентов. Все ваши лиды закрыты или в дожиме.")
+        return
+    status_label = {"active": "🟢 активен", "chatting": "💬 в диалоге", "thinking": "⏳ думает"}
+    lines = ["👥 <b>Мои Пациенты</b> (не обработаны):\n"]
+    kb = InlineKeyboardBuilder()
+    for phone, name, st in leads:
+        lbl = status_label.get(st, st)
+        lines.append(f"• {name} ({phone}) — {lbl}")
+        kb.button(text=f"✍️ {name}", callback_data=f"rp_{phone}")
+        kb.button(text=f"📞 {name}", callback_data=f"cl_{phone}")
+    kb.adjust(2)
+    await m.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb.as_markup())
+
 
 @dp.message(F.text == "📋 Мои записи")
 async def med_my_records(m: types.Message):
