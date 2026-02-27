@@ -867,30 +867,22 @@ async def closing(c: types.CallbackQuery, state: FSMContext):
     elif "f_" in c.data:
         res = c.data.split("_")[1]
         if res == 'n':
-            l_data = execute_query("SELECT touches, name FROM leads WHERE phone = ?", (p,), fetchone=True)
+            l_data = execute_query("SELECT name FROM leads WHERE phone = ?", (p,), fetchone=True)
             if not l_data:
                 await c.answer("Лид не найден.")
                 return
-            cur_t, lead_name = l_data[0] or 0, l_data[1] or p
-            new_t = cur_t + 1
+            lead_name = l_data[0] or p
             execute_query("DELETE FROM chat_sessions WHERE user_id = ? AND phone = ?", (c.from_user.id, p))
-            if new_t >= 7:
-                execute_query("UPDATE leads SET status='closed', touches=7, comment='Автозакрытие: 7 касаний' WHERE phone=?", (p,))
-                execute_query("UPDATE users SET is_busy=0 WHERE user_id=?", (c.from_user.id,))
-                text, kbd = build_lead_card(p)
-                await c.message.answer(text or f"🛑 Лид {lead_name} закрыт (7 касаний).", reply_markup=kbd, parse_mode="HTML")
-                await c.message.answer("Меню", reply_markup=get_main_menu(c.from_user.id))
-                u = execute_query("SELECT sphere FROM users WHERE user_id = ?", (c.from_user.id,), fetchone=True)
-                mgr_sphere = (u[0] or 'biz') if u else 'biz'
-                await try_assign_queued_lead_to_manager(c.from_user.id, mgr_sphere)
-            else:
-                # Лид уходит в дожим/ожидание и не блокирует новые лиды (статус thinking).
-                execute_query("UPDATE leads SET status='thinking', touches=?, last_touch=? WHERE phone=?", (new_t, datetime.now(), p))
-                execute_query("UPDATE users SET is_busy=0 WHERE user_id=?", (c.from_user.id,))
-                u = execute_query("SELECT sphere FROM users WHERE user_id = ?", (c.from_user.id,), fetchone=True)
-                mgr_sphere = (u[0] or 'biz') if u else 'biz'
-                await try_assign_queued_lead_to_manager(c.from_user.id, mgr_sphere)
-                await c.message.answer(f"🔄 Касание №{new_t} зафиксировано. Лид в ожидании, вам могут прийти новые лиды.")
+            execute_query("UPDATE leads SET status='thinking', last_touch=? WHERE phone=?", (datetime.now(), p))
+            execute_query("UPDATE users SET is_busy=0 WHERE user_id=?", (c.from_user.id,))
+            u = execute_query("SELECT sphere FROM users WHERE user_id = ?", (c.from_user.id,), fetchone=True)
+            mgr_sphere = (u[0] or 'biz') if u else 'biz'
+            await try_assign_queued_lead_to_manager(c.from_user.id, mgr_sphere)
+            try:
+                await c.message.delete()
+            except Exception:
+                pass
+            await c.message.answer(f"🔄 Лид {lead_name} в дожиме. Откройте «⏳ Дожим» для списка.", reply_markup=get_main_menu(c.from_user.id))
         else:
             await state.update_data(c_phone=p, c_status=res)
             await state.set_state(Form.closing_sphere); await c.message.answer("Сфера:")
@@ -1641,35 +1633,25 @@ async def med_end_think(c: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("med_n_"))
 async def med_end_no_answer(c: types.CallbackQuery):
-    """Медицина: не ответил — +1 касание, после 7 — автозакрытие."""
-    phone = c.data[6:]  # "med_n_" = 6 символов
+    """Медицина: НЕ ОТВЕЧАЮТ — лид в дожим (без логики 7 касаний)."""
+    phone = c.data[6:]
     if len(phone) > 30:
         await c.answer()
         return
-    row = execute_query("SELECT touches, name FROM leads WHERE phone = ? AND direction = 'med'", (phone,), fetchone=True)
+    row = execute_query("SELECT name FROM leads WHERE phone = ? AND direction = 'med'", (phone,), fetchone=True)
     if not row:
         await c.answer("Лид не найден.")
         return
-    cur_t, name = row[0] or 0, row[1] or phone
-    new_t = cur_t + 1
+    name = row[0] or phone
     execute_query("DELETE FROM chat_sessions WHERE user_id = ? AND phone = ?", (c.from_user.id, phone))
-    if new_t >= 7:
-        execute_query("UPDATE leads SET status='closed', touches=7, comment='Автозакрытие: 7 касаний' WHERE phone=? AND direction='med'", (phone,))
-        execute_query("UPDATE users SET is_busy=0 WHERE user_id=?", (c.from_user.id,))
-        try:
-            await c.message.delete()
-        except Exception:
-            pass
-        text, kbd = build_lead_card(phone)
-        await c.message.answer(text or f"🛑 Лид {name} закрыт (7 касаний).", reply_markup=kbd, parse_mode="HTML")
-        await c.message.answer("Меню", reply_markup=get_main_menu(c.from_user.id))
-        await try_assign_queued_lead_to_manager(c.from_user.id, 'med')
-    else:
-        # Лид уходит в дожим/ожидание и не блокирует новые лиды (статус thinking).
-        execute_query("UPDATE leads SET status='thinking', touches=?, last_touch=? WHERE phone=? AND direction='med'", (new_t, datetime.now(), phone))
-        execute_query("UPDATE users SET is_busy=0 WHERE user_id=?", (c.from_user.id,))
-        await try_assign_queued_lead_to_manager(c.from_user.id, 'med')
-        await c.message.edit_text(f"🔄 Касание №{new_t} зафиксировано. Пациент в ожидании, вам могут прийти новые лиды.")
+    execute_query("UPDATE leads SET status='thinking', last_touch=? WHERE phone=? AND direction='med'", (datetime.now(), phone))
+    execute_query("UPDATE users SET is_busy=0 WHERE user_id=?", (c.from_user.id,))
+    await try_assign_queued_lead_to_manager(c.from_user.id, 'med')
+    try:
+        await c.message.delete()
+    except Exception:
+        pass
+    await c.message.answer(f"🔄 Пациент {name} в дожиме. Откройте «⏳ Дожим» для списка.", reply_markup=get_main_menu(c.from_user.id))
     await c.answer()
 
 @dp.callback_query(F.data.startswith("med_p_"))
@@ -1805,10 +1787,25 @@ async def p_save(m: types.Message, state: FSMContext):
 async def mgr_lists(m: types.Message):
     st_map = {"⏳ Дожим": "thinking", "✅ Оплачено": "closed", "❌ Отказ": "closed"}
     leads = execute_query("SELECT phone, name FROM leads WHERE manager_id = ? AND status = ? AND (direction = 'biz' OR direction IS NULL)", (m.from_user.id, st_map[m.text]), fetchall=True)
-    if not leads: return await m.answer("Список пуст.")
-    kb = InlineKeyboardBuilder()
-    for p, n in leads: kb.button(text=f"👤 {n}", callback_data=f"rp_{p[:30]}")
-    await m.answer(f"Ваши клиенты ({m.text}):", reply_markup=kb.adjust(1).as_markup())
+    if not leads:
+        if m.text == "⏳ Дожим":
+            return await m.answer("⏳ Дожим — клиенты в ожидании (не ответили / думает).\n\nСписок пуст.")
+        return await m.answer("Список пуст.")
+    if m.text == "⏳ Дожим":
+        lines = ["⏳ <b>Дожим</b> — клиенты в ожидании (не ответили / думает):\n"]
+        for p, n in leads:
+            lines.append(f"• {n} ({p})")
+        kb = InlineKeyboardBuilder()
+        for p, n in leads:
+            kb.button(text=f"✍️ {n}", callback_data=f"rp_{p[:30]}")
+            kb.button(text=f"📞 {n}", callback_data=f"cl_{p[:30]}")
+        kb.adjust(2)
+        await m.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb.as_markup())
+    else:
+        kb = InlineKeyboardBuilder()
+        for p, n in leads:
+            kb.button(text=f"👤 {n}", callback_data=f"rp_{p[:30]}")
+        await m.answer(f"Ваши клиенты ({m.text}):", reply_markup=kb.adjust(1).as_markup())
 
 @dp.message(F.text.contains("ЛИДЫ"))
 async def tgl(m: types.Message):
@@ -1821,10 +1818,10 @@ async def wl(m: types.Message, state: FSMContext):
     data = await state.get_data()
     sphere = data.get("owner_current_sphere")
     if is_owner(m.from_user.id) and sphere == "med":
-        cond = "status IN ('active', 'chatting') AND direction = 'med'"
+        cond = "status IN ('active', 'chatting') AND direction = 'med' AND manager_id IS NOT NULL"
         title = "📋 <b>В РАБОТЕ (Медицина):</b>"
     else:
-        cond = "status IN ('active', 'chatting') AND (direction = 'biz' OR direction IS NULL)"
+        cond = "status IN ('active', 'chatting') AND (direction = 'biz' OR direction IS NULL) AND manager_id IS NOT NULL"
         title = "📋 <b>В РАБОТЕ (Бизнес):</b>"
     rows = execute_query(
         f"SELECT l.phone, l.name, l.manager_id, l.status FROM leads l WHERE {cond} ORDER BY l.last_touch DESC",
@@ -2299,20 +2296,20 @@ async def med_appoint_phone_ok(m: types.Message, state: FSMContext):
 
 @dp.message(F.text == "👥 Мои Пациенты")
 async def med_my_patients(m: types.Message):
-    """Менеджер медицины: все пациенты, которые ещё не обработаны (не закрыты)."""
+    """Менеджер медицины: пациенты, привязанные к нему, которым он ещё не ответил (новые и в диалоге). Дожим — отдельно в «⏳ Дожим»."""
     u = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (m.from_user.id,), fetchone=True)
     if not u or u[0] != 'manager' or u[1] != 'med':
         return
     leads = execute_query(
-        "SELECT phone, name, status FROM leads WHERE manager_id = ? AND direction = 'med' AND status IN ('active', 'chatting', 'thinking') ORDER BY last_touch DESC",
+        "SELECT phone, name, status FROM leads WHERE manager_id = ? AND direction = 'med' AND status IN ('active', 'chatting') ORDER BY last_touch DESC",
         (m.from_user.id,),
         fetchall=True,
     )
     if not leads:
-        await m.answer("Нет необработанных пациентов. Все ваши лиды закрыты или в дожиме.")
+        await m.answer("Нет пациентов, которым вы ещё не ответили. Новые лиды появятся здесь; тех, кто в ожидании — смотрите в «⏳ Дожим».")
         return
-    status_label = {"active": "🟢 активен", "chatting": "💬 в диалоге", "thinking": "⏳ думает"}
-    lines = ["👥 <b>Мои Пациенты</b> (не обработаны):\n"]
+    status_label = {"active": "🟢 новый", "chatting": "💬 в диалоге"}
+    lines = ["👥 <b>Мои Пациенты</b> — кому вы ещё не ответили:\n"]
     kb = InlineKeyboardBuilder()
     for phone, name, st in leads:
         lbl = status_label.get(st, st)
@@ -2370,14 +2367,16 @@ async def med_dozhim(m: types.Message):
         return
     leads = execute_query("SELECT phone, name FROM leads WHERE manager_id = ? AND status = 'thinking' AND (direction = 'med' OR direction IS NULL)", (m.from_user.id,), fetchall=True)
     if not leads:
-        await m.answer("В дожиме никого нет.")
+        await m.answer("⏳ Дожим — пациенты в ожидании (не ответили / подумает).\n\nСписок пуст.")
         return
+    lines = ["⏳ <b>Дожим</b> — пациенты в ожидании (не ответили / подумает):\n"]
     kb = InlineKeyboardBuilder()
     for phone, name in leads:
-        kb.button(text=f"👤 {name}", callback_data=f"rp_{phone[:30]}")
+        lines.append(f"• {name} ({phone})")
+        kb.button(text=f"✍️ {name}", callback_data=f"rp_{phone[:30]}")
         kb.button(text=f"📞 {name}", callback_data=f"cl_{phone[:30]}")
-    kb.adjust(1)
-    await m.answer("⏳ Дожим — ваши пациенты:", reply_markup=kb.as_markup())
+    kb.adjust(2)
+    await m.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb.as_markup())
 
 @dp.message(F.text == "💰 Оплаты")
 async def med_payment_start(m: types.Message, state: FSMContext):
