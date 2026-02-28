@@ -332,9 +332,9 @@ def get_lead_phone_by_prefix(phone_prefix: str):
     return row[0] if row else None
 
 def _tel_url(phone_val):
-    """URL для кнопки «Набрать»: tel: с плюсом в виде %2B, чтобы Telegram не выдавал Wrong port."""
+    """URL для кнопки «Набрать»: только tel: и цифры (без + и %2B), иначе Telegram выдаёт Wrong port."""
     digits = "".join(c for c in str(phone_val) if c.isdigit())
-    return f"tel:%2B{digits}" if digits else "tel:"
+    return f"tel:{digits}" if digits else "tel:"
 
 def lead_note_add(phone: str, user_id: int, text: str):
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
