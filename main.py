@@ -331,6 +331,11 @@ def get_lead_phone_by_prefix(phone_prefix: str):
     )
     return row[0] if row else None
 
+def _tel_url(phone_val):
+    """URL для кнопки «Набрать»: tel: с плюсом в виде %2B, чтобы Telegram не выдавал Wrong port."""
+    digits = "".join(c for c in str(phone_val) if c.isdigit())
+    return f"tel:%2B{digits}" if digits else "tel:"
+
 def lead_note_add(phone: str, user_id: int, text: str):
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     execute_query("INSERT INTO lead_notes (phone, user_id, text, created_at) VALUES (?, ?, ?, ?)", (phone, user_id, (text or "")[:1000], now))
@@ -839,7 +844,7 @@ async def closing(c: types.CallbackQuery, state: FSMContext):
         direction = get_lead_direction(full_phone)
         if direction == 'med':
             kb = InlineKeyboardBuilder()
-            kb.button(text=f"📞 Набрать {phone_for_tel}", url=f"tel:{phone_for_tel}")
+            kb.button(text=f"📞 Набрать {phone_for_tel}", url=_tel_url(full_phone))
             kb.button(text="❌ Отказ", callback_data=f"med_r_{p}")
             kb.button(text="⏳ Подумает", callback_data=f"med_t_{p}")
             kb.button(text="💰 Оплатил", callback_data=f"med_p_{p}")
@@ -848,7 +853,7 @@ async def closing(c: types.CallbackQuery, state: FSMContext):
             await c.message.answer("Итог звонка (нажмите «Набрать» — откроется набор номера в телефоне):", reply_markup=kb.as_markup())
         else:
             kb = InlineKeyboardBuilder()
-            kb.button(text=f"📞 Набрать {phone_for_tel}", url=f"tel:{phone_for_tel}")
+            kb.button(text=f"📞 Набрать {phone_for_tel}", url=_tel_url(full_phone))
             kb.button(text="💰 ОПЛАТИЛ", callback_data=f"f_s_{p}")
             kb.button(text="⏳ ДУМАЕТ", callback_data=f"f_t_{p}")
             kb.button(text="❌ ОТКАЗ", callback_data=f"f_r_{p}")
@@ -1672,7 +1677,7 @@ async def reply_done(m: types.Message, state: FSMContext):
         if sphere == 'med' and u[1] == 'med':
             kb = InlineKeyboardBuilder()
             phone_tel = "+" + "".join(ch for ch in str(target) if ch.isdigit())
-            kb.button(text=f"📞 Набрать {phone_tel}", url=f"tel:{phone_tel}")
+            kb.button(text=f"📞 Набрать {phone_tel}", url=_tel_url(target))
             kb.button(text="❌ Отказ", callback_data=f"med_r_{target[:30]}")
             kb.button(text="⏳ Подумает", callback_data=f"med_t_{target[:30]}")
             kb.button(text="💰 Оплатил", callback_data=f"med_p_{target[:30]}")
@@ -1682,7 +1687,7 @@ async def reply_done(m: types.Message, state: FSMContext):
         else:
             kb = InlineKeyboardBuilder()
             phone_tel = "+" + "".join(ch for ch in str(target) if ch.isdigit())
-            kb.button(text=f"📞 Набрать {phone_tel}", url=f"tel:{phone_tel}")
+            kb.button(text=f"📞 Набрать {phone_tel}", url=_tel_url(target))
             kb.button(text="💰 ОПЛАТИЛ", callback_data=f"f_s_{target[:30]}")
             kb.button(text="⏳ ДУМАЕТ", callback_data=f"f_t_{target[:30]}")
             kb.button(text="❌ ОТКАЗ", callback_data=f"f_r_{target[:30]}")
@@ -1718,7 +1723,7 @@ async def finish_dialog_fallback(m: types.Message, state: FSMContext):
     if sphere == 'med' and u[1] == 'med':
         kb = InlineKeyboardBuilder()
         phone_tel = "+" + "".join(ch for ch in str(target) if ch.isdigit())
-        kb.button(text=f"📞 Набрать {phone_tel}", url=f"tel:{phone_tel}")
+        kb.button(text=f"📞 Набрать {phone_tel}", url=_tel_url(target))
         kb.button(text="❌ Отказ", callback_data=f"med_r_{target[:30]}")
         kb.button(text="⏳ Подумает", callback_data=f"med_t_{target[:30]}")
         kb.button(text="💰 Оплатил", callback_data=f"med_p_{target[:30]}")
@@ -1728,7 +1733,7 @@ async def finish_dialog_fallback(m: types.Message, state: FSMContext):
     else:
         kb = InlineKeyboardBuilder()
         phone_tel = "+" + "".join(ch for ch in str(target) if ch.isdigit())
-        kb.button(text=f"📞 Набрать {phone_tel}", url=f"tel:{phone_tel}")
+        kb.button(text=f"📞 Набрать {phone_tel}", url=_tel_url(target))
         kb.button(text="💰 ОПЛАТИЛ", callback_data=f"f_s_{target[:30]}")
         kb.button(text="⏳ ДУМАЕТ", callback_data=f"f_t_{target[:30]}")
         kb.button(text="❌ ОТКАЗ", callback_data=f"f_r_{target[:30]}")
@@ -1736,6 +1741,7 @@ async def finish_dialog_fallback(m: types.Message, state: FSMContext):
         kb.adjust(1)
         await m.answer("Итог диалога (нажмите «Набрать» — откроется набор в телефоне):", reply_markup=kb.as_markup())
     await state.clear()
+    await m.answer("Выберите итог выше. Меню:", reply_markup=get_main_menu(m.from_user.id))
 
 MED_PACKAGES = ["Пакет 1", "Пакет 2", "Пакет 3", "Первичка", "Вторичка"]
 
