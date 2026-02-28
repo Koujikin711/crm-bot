@@ -2583,8 +2583,9 @@ async def med_my_patients(m: types.Message):
         lbl = status_label.get(st, st)
         lines.append(f"• {name} ({phone}) — {lbl}")
         kb.button(text=f"✍️ {name}", callback_data=f"rp_{phone[:30]}")
-        kb.button(text=f"📞 {name}", callback_data=f"cl_{phone[:30]}")
-    kb.adjust(2)
+        kb.button(text=f"📞 {name}", url=_tel_url(phone))
+        kb.button(text="📋 Итог звонка", callback_data=f"cl_{phone[:30]}")
+    kb.adjust(3)
     await m.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb.as_markup())
 
 
@@ -2601,8 +2602,9 @@ async def med_my_records(m: types.Message):
         kb = InlineKeyboardBuilder()
         for phone, name in leads:
             kb.button(text=f"✍️ {name}", callback_data=f"rp_{phone[:30]}")
-            kb.button(text=f"📞 {name}", callback_data=f"cl_{phone[:30]}")
-        kb.adjust(2)
+            kb.button(text=f"📞 {name}", url=_tel_url(phone))
+            kb.button(text="📋 Итог", callback_data=f"cl_{phone[:30]}")
+        kb.adjust(3)
         await m.answer("📋 Ваши пациенты:", reply_markup=kb.as_markup())
     else:
         rows = execute_query("SELECT date, time, doctor, phone FROM appointments WHERE date >= date('now') ORDER BY date, time", fetchall=True)
@@ -2642,8 +2644,9 @@ async def med_dozhim(m: types.Message):
     for phone, name in leads:
         lines.append(f"• {name} ({phone})")
         kb.button(text=f"✍️ {name}", callback_data=f"rp_{phone[:30]}")
-        kb.button(text=f"📞 {name}", callback_data=f"cl_{phone[:30]}")
-    kb.adjust(2)
+        kb.button(text=f"📞 {name}", url=_tel_url(phone))
+        kb.button(text="📋 Итог", callback_data=f"cl_{phone[:30]}")
+    kb.adjust(3)
     await m.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb.as_markup())
 
 @dp.message(F.text == "💰 Оплаты")
