@@ -332,9 +332,21 @@ def get_lead_phone_by_prefix(phone_prefix: str):
     return row[0] if row else None
 
 def _tel_url(phone_val):
-    """URL для кнопки «Набрать»: только tel: и цифры (без + и %2B), иначе Telegram выдаёт Wrong port."""
+    """Не используется: Telegram отклоняет любые tel: в inline-кнопках. Используем callback show_tel_."""
     digits = "".join(c for c in str(phone_val) if c.isdigit())
     return f"tel:{digits}" if digits else "tel:"
+
+@dp.callback_query(F.data.startswith("show_tel_"))
+async def show_tel_callback(c: types.CallbackQuery):
+    """По нажатию «📞 Набрать» — отправляем номер текстом (без url=tel:, т.к. Telegram его отклоняет)."""
+    prefix = c.data.replace("show_tel_", "", 1).strip()
+    if len(prefix) > 30:
+        prefix = prefix[:30]
+    full_phone = get_lead_phone_by_prefix(prefix) or prefix
+    digits = "".join(ch for ch in str(full_phone) if ch.isdigit())
+    if digits:
+        await c.message.answer(f"📞 Набрать: +{digits}")
+    await c.answer()
 
 def lead_note_add(phone: str, user_id: int, text: str):
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -844,7 +856,7 @@ async def closing(c: types.CallbackQuery, state: FSMContext):
         direction = get_lead_direction(full_phone)
         if direction == 'med':
             kb = InlineKeyboardBuilder()
-            kb.button(text=f"📞 Набрать {phone_for_tel}", url=_tel_url(full_phone))
+            kb.button(text=f"📞 Набрать {phone_for_tel}", callback_data=f"show_tel_{p}")
             kb.button(text="❌ Отказ", callback_data=f"med_r_{p}")
             kb.button(text="⏳ Подумает", callback_data=f"med_t_{p}")
             kb.button(text="💰 Оплатил", callback_data=f"med_p_{p}")
@@ -853,7 +865,7 @@ async def closing(c: types.CallbackQuery, state: FSMContext):
             await c.message.answer("Итог звонка (нажмите «Набрать» — откроется набор номера в телефоне):", reply_markup=kb.as_markup())
         else:
             kb = InlineKeyboardBuilder()
-            kb.button(text=f"📞 Набрать {phone_for_tel}", url=_tel_url(full_phone))
+            kb.button(text=f"📞 Набрать {phone_for_tel}", callback_data=f"show_tel_{p}")
             kb.button(text="💰 ОПЛАТИЛ", callback_data=f"f_s_{p}")
             kb.button(text="⏳ ДУМАЕТ", callback_data=f"f_t_{p}")
             kb.button(text="❌ ОТКАЗ", callback_data=f"f_r_{p}")
@@ -1677,7 +1689,7 @@ async def reply_done(m: types.Message, state: FSMContext):
         if sphere == 'med' and u[1] == 'med':
             kb = InlineKeyboardBuilder()
             phone_tel = "+" + "".join(ch for ch in str(target) if ch.isdigit())
-            kb.button(text=f"📞 Набрать {phone_tel}", url=_tel_url(target))
+            kb.button(text=f"📞 Набрать {phone_tel}", callback_data=f"show_tel_{target[:30]}")
             kb.button(text="❌ Отказ", callback_data=f"med_r_{target[:30]}")
             kb.button(text="⏳ Подумает", callback_data=f"med_t_{target[:30]}")
             kb.button(text="💰 Оплатил", callback_data=f"med_p_{target[:30]}")
@@ -1687,7 +1699,7 @@ async def reply_done(m: types.Message, state: FSMContext):
         else:
             kb = InlineKeyboardBuilder()
             phone_tel = "+" + "".join(ch for ch in str(target) if ch.isdigit())
-            kb.button(text=f"📞 Набрать {phone_tel}", url=_tel_url(target))
+            kb.button(text=f"📞 Набрать {phone_tel}", callback_data=f"show_tel_{target[:30]}")
             kb.button(text="💰 ОПЛАТИЛ", callback_data=f"f_s_{target[:30]}")
             kb.button(text="⏳ ДУМАЕТ", callback_data=f"f_t_{target[:30]}")
             kb.button(text="❌ ОТКАЗ", callback_data=f"f_r_{target[:30]}")
@@ -1723,7 +1735,7 @@ async def finish_dialog_fallback(m: types.Message, state: FSMContext):
     if sphere == 'med' and u[1] == 'med':
         kb = InlineKeyboardBuilder()
         phone_tel = "+" + "".join(ch for ch in str(target) if ch.isdigit())
-        kb.button(text=f"📞 Набрать {phone_tel}", url=_tel_url(target))
+        kb.button(text=f"📞 Набрать {phone_tel}", callback_data=f"show_tel_{target[:30]}")
         kb.button(text="❌ Отказ", callback_data=f"med_r_{target[:30]}")
         kb.button(text="⏳ Подумает", callback_data=f"med_t_{target[:30]}")
         kb.button(text="💰 Оплатил", callback_data=f"med_p_{target[:30]}")
@@ -1733,7 +1745,7 @@ async def finish_dialog_fallback(m: types.Message, state: FSMContext):
     else:
         kb = InlineKeyboardBuilder()
         phone_tel = "+" + "".join(ch for ch in str(target) if ch.isdigit())
-        kb.button(text=f"📞 Набрать {phone_tel}", url=_tel_url(target))
+        kb.button(text=f"📞 Набрать {phone_tel}", callback_data=f"show_tel_{target[:30]}")
         kb.button(text="💰 ОПЛАТИЛ", callback_data=f"f_s_{target[:30]}")
         kb.button(text="⏳ ДУМАЕТ", callback_data=f"f_t_{target[:30]}")
         kb.button(text="❌ ОТКАЗ", callback_data=f"f_r_{target[:30]}")
@@ -2583,7 +2595,7 @@ async def med_my_patients(m: types.Message):
         lbl = status_label.get(st, st)
         lines.append(f"• {name} ({phone}) — {lbl}")
         kb.button(text=f"✍️ {name}", callback_data=f"rp_{phone[:30]}")
-        kb.button(text=f"📞 {name}", url=_tel_url(phone))
+        kb.button(text=f"📞 {name}", callback_data=f"show_tel_{phone[:30]}")
         kb.button(text="📋 Итог звонка", callback_data=f"cl_{phone[:30]}")
     kb.adjust(3)
     await m.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb.as_markup())
@@ -2602,7 +2614,7 @@ async def med_my_records(m: types.Message):
         kb = InlineKeyboardBuilder()
         for phone, name in leads:
             kb.button(text=f"✍️ {name}", callback_data=f"rp_{phone[:30]}")
-            kb.button(text=f"📞 {name}", url=_tel_url(phone))
+            kb.button(text=f"📞 {name}", callback_data=f"show_tel_{phone[:30]}")
             kb.button(text="📋 Итог", callback_data=f"cl_{phone[:30]}")
         kb.adjust(3)
         await m.answer("📋 Ваши пациенты:", reply_markup=kb.as_markup())
@@ -2644,7 +2656,7 @@ async def med_dozhim(m: types.Message):
     for phone, name in leads:
         lines.append(f"• {name} ({phone})")
         kb.button(text=f"✍️ {name}", callback_data=f"rp_{phone[:30]}")
-        kb.button(text=f"📞 {name}", url=_tel_url(phone))
+        kb.button(text=f"📞 {name}", callback_data=f"show_tel_{phone[:30]}")
         kb.button(text="📋 Итог", callback_data=f"cl_{phone[:30]}")
     kb.adjust(3)
     await m.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb.as_markup())
