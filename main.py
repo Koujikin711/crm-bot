@@ -858,13 +858,13 @@ async def closing(c: types.CallbackQuery, state: FSMContext):
     elif "f_" in c.data:
         res = c.data.split("_")[1]
         if res == 'n':
-            l_data = execute_query("SELECT name FROM leads WHERE phone = ?", (p,), fetchone=True)
+            l_data = execute_query("SELECT name FROM leads WHERE phone = ?", (full_phone,), fetchone=True)
             if not l_data:
                 await c.answer("Лид не найден.")
                 return
-            lead_name = l_data[0] or p
-            execute_query("DELETE FROM chat_sessions WHERE user_id = ? AND phone = ?", (c.from_user.id, p))
-            execute_query("UPDATE leads SET status='thinking', last_touch=? WHERE phone=?", (datetime.now(), p))
+            lead_name = l_data[0] or full_phone
+            execute_query("DELETE FROM chat_sessions WHERE user_id = ? AND phone = ?", (c.from_user.id, full_phone))
+            execute_query("UPDATE leads SET status='thinking', last_touch=? WHERE phone=?", (datetime.now(), full_phone))
             execute_query("UPDATE users SET is_busy=0 WHERE user_id=?", (c.from_user.id,))
             u = execute_query("SELECT sphere FROM users WHERE user_id = ?", (c.from_user.id,), fetchone=True)
             mgr_sphere = (u[0] or 'biz') if u else 'biz'
@@ -875,7 +875,7 @@ async def closing(c: types.CallbackQuery, state: FSMContext):
                 pass
             await c.message.answer(f"🔄 Лид {lead_name} в дожиме. Откройте «⏳ Дожим» для списка.", reply_markup=get_main_menu(c.from_user.id))
         else:
-            await state.update_data(c_phone=p, c_status=res)
+            await state.update_data(c_phone=full_phone, c_status=res)
             await state.set_state(Form.closing_sphere); await c.message.answer("Сфера:")
     await c.answer()
 
@@ -1600,55 +1600,57 @@ async def start_dialog_btn(m: types.Message, state: FSMContext):
 
 @dp.message(Form.new_chat_phone)
 async def start_dialog_phone(m: types.Message, state: FSMContext):
-    phone = (m.text or "").replace("+", "").strip()
-    if not phone:
+    phone_raw = (m.text or "").replace("+", "").strip()
+    if not phone_raw:
         await m.answer("Введите номер (без +).")
         return
+    full_phone = get_lead_phone_by_prefix(phone_raw) or phone_raw
     d = await state.get_data()
     sphere = d.get('new_chat_sphere')
     if sphere is None:
-        sphere = get_lead_direction(phone)
-    await state.update_data(target=phone, new_chat_sphere=sphere)
+        sphere = get_lead_direction(full_phone)
+    await state.update_data(target=full_phone, new_chat_sphere=sphere)
     await state.set_state(Form.waiting_for_reply)
-    row = execute_query("SELECT name FROM leads WHERE phone = ?", (phone,), fetchone=True)
-    name = row[0] if row else phone
+    row = execute_query("SELECT name FROM leads WHERE phone = ?", (full_phone,), fetchone=True)
+    name = row[0] if row else full_phone
     if row:
-        execute_query("UPDATE leads SET status = 'chatting' WHERE phone = ?", (phone,))
+        execute_query("UPDATE leads SET status = 'chatting' WHERE phone = ?", (full_phone,))
         now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        execute_query("INSERT OR REPLACE INTO chat_sessions (user_id, phone, last_outgoing_at, reminder_sent) VALUES (?, ?, ?, 0)", (m.from_user.id, phone, now_iso))
-        await chat_history_delete_messages(m.from_user.id, phone=phone)
+        execute_query("INSERT OR REPLACE INTO chat_sessions (user_id, phone, last_outgoing_at, reminder_sent) VALUES (?, ?, ?, 0)", (m.from_user.id, full_phone, now_iso))
+        await chat_history_delete_messages(m.from_user.id, phone=full_phone)
     msg = await m.answer(
-        f"💬 <b>Диалог с {name}</b> ({phone})\n\nОтправляйте текст, голос, фото — всё уйдёт в WA. Внизу кнопка «Завершить диалог».",
+        f"💬 <b>Диалог с {name}</b> ({full_phone})\n\nОтправляйте текст, голос, фото — всё уйдёт в WA. Внизу кнопка «Завершить диалог».",
         reply_markup=get_med_finish_dialog_kb(),
         parse_mode="HTML",
     )
     if row:
-        chat_history_add(m.from_user.id, msg.message_id, phone=phone, context="session")
+        chat_history_add(m.from_user.id, msg.message_id, phone=full_phone, context="session")
 
 @dp.callback_query(F.data.startswith("rp_"))
 async def reply_start(c: types.CallbackQuery, state: FSMContext):
-    phone = c.data.split("_")[1]
-    if len(phone) > 30:
-        phone = phone[:30]
-    await state.update_data(target=phone)
-    sphere = get_lead_direction(phone)
+    phone_prefix = c.data.split("_", 1)[1].strip()
+    if len(phone_prefix) > 30:
+        phone_prefix = phone_prefix[:30]
+    full_phone = get_lead_phone_by_prefix(phone_prefix) or phone_prefix
+    await state.update_data(target=full_phone)
+    sphere = get_lead_direction(full_phone)
     await state.update_data(new_chat_sphere=sphere)
     await state.set_state(Form.waiting_for_reply)
     # Переводим лид в режим «прямого коридора»
-    execute_query("UPDATE leads SET status = 'chatting' WHERE phone = ?", (phone,))
+    execute_query("UPDATE leads SET status = 'chatting' WHERE phone = ?", (full_phone,))
     now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    execute_query("INSERT OR REPLACE INTO chat_sessions (user_id, phone, last_outgoing_at, reminder_sent) VALUES (?, ?, ?, 0)", (c.from_user.id, phone, now_iso))
+    execute_query("INSERT OR REPLACE INTO chat_sessions (user_id, phone, last_outgoing_at, reminder_sent) VALUES (?, ?, ?, 0)", (c.from_user.id, full_phone, now_iso))
     # Удаляем старые сообщения предыдущей сессии (если были)
-    await chat_history_delete_messages(c.from_user.id, phone=phone)
-    row = execute_query("SELECT name FROM leads WHERE phone = ?", (phone,), fetchone=True)
-    name = row[0] if row else phone
+    await chat_history_delete_messages(c.from_user.id, phone=full_phone)
+    row = execute_query("SELECT name FROM leads WHERE phone = ?", (full_phone,), fetchone=True)
+    name = row[0] if row else full_phone
     # Одна инфо-панель + кнопка «Завершить диалог»
     msg = await c.message.answer(
-        f"💬 <b>Диалог с {name}</b> ({phone})\n\nОтправляйте текст, голос, фото — всё уйдёт в WA. Внизу кнопка «Завершить диалог».",
+        f"💬 <b>Диалог с {name}</b> ({full_phone})\n\nОтправляйте текст, голос, фото — всё уйдёт в WA. Внизу кнопка «Завершить диалог».",
         reply_markup=get_med_finish_dialog_kb(),
         parse_mode="HTML",
     )
-    chat_history_add(c.from_user.id, msg.message_id, phone=phone, context="session")
+    chat_history_add(c.from_user.id, msg.message_id, phone=full_phone, context="session")
     await c.answer()
 
 @dp.message(Form.waiting_for_reply)
@@ -1676,7 +1678,7 @@ async def reply_done(m: types.Message, state: FSMContext):
             kb.button(text="💰 Оплатил", callback_data=f"med_p_{target[:30]}")
             kb.button(text="🚫 НЕ ОТВЕЧАЮТ", callback_data=f"med_n_{target[:30]}")
             kb.adjust(1)
-            outcome_msg = await m.answer("Итог диалога (нажмите «Набрать» — откроется набор в телефоне):", reply_markup=kb.as_markup())
+            await m.answer("Итог диалога (нажмите «Набрать» — откроется набор в телефоне):", reply_markup=kb.as_markup())
         else:
             kb = InlineKeyboardBuilder()
             phone_tel = "+" + "".join(ch for ch in str(target) if ch.isdigit())
@@ -1686,8 +1688,9 @@ async def reply_done(m: types.Message, state: FSMContext):
             kb.button(text="❌ ОТКАЗ", callback_data=f"f_r_{target[:30]}")
             kb.button(text="🚫 НЕ ОТВЕТИЛ", callback_data=f"f_n_{target[:30]}")
             kb.adjust(1)
-            outcome_msg = await m.answer("Итог диалога (нажмите «Набрать» — откроется набор в телефоне):", reply_markup=kb.as_markup())
-        await state.update_data(outcome_message_id=outcome_msg.message_id, c_phone=target)
+            await m.answer("Итог диалога (нажмите «Набрать» — откроется набор в телефоне):", reply_markup=kb.as_markup())
+        await state.clear()
+        await m.answer("Выберите итог выше. Меню:", reply_markup=get_main_menu(m.from_user.id))
         return
     await send_to_wa(target, m, sphere=sphere)
     log_lead_event(target, "outgoing", (m.text or "[медиа]")[:200], m.from_user.id)
@@ -1742,7 +1745,8 @@ async def med_end_refuse(c: types.CallbackQuery, state: FSMContext):
     phone = c.data[6:]
     if len(phone) > 30:
         phone = phone[:30]
-    await state.update_data(refuse_phone=phone)
+    full_phone = get_lead_phone_by_prefix(phone) or phone
+    await state.update_data(refuse_phone=full_phone)
     await state.set_state(Form.refuse_comment_med)
     await c.message.edit_text("📝 Введите комментарий: почему отказали?")
     await c.answer()
@@ -1773,16 +1777,17 @@ async def med_end_think(c: types.CallbackQuery, state: FSMContext):
     phone = c.data[6:]
     if len(phone) > 30:
         phone = phone[:30]
-    execute_query("UPDATE leads SET status='thinking', is_answered=1, last_touch=? WHERE phone=? AND (direction='med' OR direction IS NULL)", (datetime.now().strftime("%Y-%m-%d %H:%M"), phone))
-    execute_query("DELETE FROM follow_up_queue WHERE phone = ?", (phone,))
-    execute_query("DELETE FROM chat_sessions WHERE user_id = ? AND phone = ?", (c.from_user.id, phone))
-    log_lead_event(phone, "status_change", "thinking: Подумает", c.from_user.id)
+    full_phone = get_lead_phone_by_prefix(phone) or phone
+    execute_query("UPDATE leads SET status='thinking', is_answered=1, last_touch=? WHERE phone=? AND (direction='med' OR direction IS NULL)", (datetime.now().strftime("%Y-%m-%d %H:%M"), full_phone))
+    execute_query("DELETE FROM follow_up_queue WHERE phone = ?", (full_phone,))
+    execute_query("DELETE FROM chat_sessions WHERE user_id = ? AND phone = ?", (c.from_user.id, full_phone))
+    log_lead_event(full_phone, "status_change", "thinking: Подумает", c.from_user.id)
     execute_query("UPDATE users SET is_busy=0 WHERE user_id=?", (c.from_user.id,))
     try:
         await c.message.delete()
     except Exception:
         pass
-    text, kbd = build_lead_card(phone)
+    text, kbd = build_lead_card(full_phone)
     await c.message.answer(text or "⏳ Подумает.", reply_markup=kbd, parse_mode="HTML")
     await c.message.answer("Меню", reply_markup=get_main_menu(c.from_user.id))
     await state.clear()
@@ -1796,13 +1801,14 @@ async def med_end_no_answer(c: types.CallbackQuery):
     if len(phone) > 30:
         await c.answer()
         return
-    row = execute_query("SELECT name FROM leads WHERE phone = ? AND direction = 'med'", (phone,), fetchone=True)
+    full_phone = get_lead_phone_by_prefix(phone) or phone
+    row = execute_query("SELECT name FROM leads WHERE phone = ? AND direction = 'med'", (full_phone,), fetchone=True)
     if not row:
         await c.answer("Лид не найден.")
         return
-    name = row[0] or phone
-    execute_query("DELETE FROM chat_sessions WHERE user_id = ? AND phone = ?", (c.from_user.id, phone))
-    execute_query("UPDATE leads SET status='thinking', last_touch=? WHERE phone=? AND direction='med'", (datetime.now(), phone))
+    name = row[0] or full_phone
+    execute_query("DELETE FROM chat_sessions WHERE user_id = ? AND phone = ?", (c.from_user.id, full_phone))
+    execute_query("UPDATE leads SET status='thinking', last_touch=? WHERE phone=? AND direction='med'", (datetime.now(), full_phone))
     execute_query("UPDATE users SET is_busy=0 WHERE user_id=?", (c.from_user.id,))
     await try_assign_queued_lead_to_manager(c.from_user.id, 'med')
     try:
@@ -1815,12 +1821,14 @@ async def med_end_no_answer(c: types.CallbackQuery):
 @dp.callback_query(F.data.startswith("med_p_"))
 async def med_end_paid(c: types.CallbackQuery, state: FSMContext):
     phone = c.data[6:]
-    if len(phone) > 20:
-        await c.answer()
-        return
+    if len(phone) > 30:
+        phone = phone[:30]
+    full_phone = get_lead_phone_by_prefix(phone) or phone
+    # В callback_data передаём короткий префикс (лимит Telegram)
+    p_short = full_phone[:20] if len(full_phone) > 20 else full_phone
     kb = InlineKeyboardBuilder()
     for i, pkg in enumerate(MED_PACKAGES):
-        kb.button(text=pkg, callback_data=f"medpkg_{phone}_{i}")
+        kb.button(text=pkg, callback_data=f"medpkg_{p_short}_{i}")
     kb.adjust(2)
     await c.message.edit_text("Выберите услугу/пакет:", reply_markup=kb.as_markup())
     await c.answer()
@@ -1831,10 +1839,11 @@ async def med_paid_package(c: types.CallbackQuery, state: FSMContext):
     if len(parts) < 3:
         await c.answer()
         return
-    phone = parts[1]
+    phone_prefix = parts[1]
+    full_phone = get_lead_phone_by_prefix(phone_prefix) or phone_prefix
     idx = int(parts[2]) if parts[2].isdigit() else 0
     pkg = MED_PACKAGES[idx] if 0 <= idx < len(MED_PACKAGES) else MED_PACKAGES[0]
-    await state.update_data(med_paid_phone=phone, med_paid_service=pkg)
+    await state.update_data(med_paid_phone=full_phone, med_paid_service=pkg)
     await state.set_state(Form.med_paid_sum)
     await c.message.edit_text(f"Услуга: {pkg}. Введите сумму оплаты:")
     await c.answer()
