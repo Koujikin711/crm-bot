@@ -1,0 +1,105 @@
+/* Сайдбар в стиле Битрикс: слева фиксированное меню */
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background: #f0f2f5;
+  color: #333;
+}
+
+.sidebar {
+  position: fixed;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 260px;
+  background: #2c3e50;
+  color: #ecf0f1;
+  display: flex;
+  flex-direction: column;
+  z-index: 100;
+  box-shadow: 2px 0 12px rgba(0,0,0,0.15);
+}
+
+.sidebar-header {
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.logo {
+  font-weight: 700;
+  font-size: 1.1rem;
+}
+
+.logout {
+  color: #bdc3c7;
+  text-decoration: none;
+  font-size: 0.85rem;
+}
+.logout:hover { color: #fff; }
+
+.user-info {
+  padding: 1rem 1.25rem;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+  font-size: 0.9rem;
+}
+.user-info strong { display: block; margin-bottom: 0.25rem; }
+.user-info .role { color: #95a5a6; font-size: 0.8rem; }
+
+.sidebar-nav {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.75rem 0;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  padding: 0.65rem 1.25rem;
+  color: #ecf0f1;
+  text-decoration: none;
+  font-size: 0.95rem;
+  transition: background 0.15s;
+}
+.nav-item:hover {
+  background: rgba(255,255,255,0.08);
+}
+.nav-icon {
+  margin-right: 0.75rem;
+  font-size: 1.1rem;
+}
+.nav-text { flex: 1; }
+
+.content {
+  margin-left: 260px;
+  min-height: 100vh;
+  padding: 1.5rem 2rem;
+}
+
+.content-header {
+  margin-bottom: 1.5rem;
+}
+.content-header h1 { margin: 0 0 0.5rem; font-size: 1.5rem; }
+.content-header p { margin: 0; color: #666; font-size: 0.95rem; }
+
+.content-body {
+  background: #fff;
+  border-radius: 8px;
+  padding: 1.5rem;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+}
+
+@media (max-width: 768px) {
+  .sidebar { width: 72px; }
+  .sidebar .nav-text,
+  .sidebar .user-info .role,
+  .sidebar-header .logo { display: none; }
+  .sidebar-header { justify-content: center; }
+  .user-info { padding: 0.75rem; text-align: center; }
+  .nav-item { justify-content: center; padding: 0.75rem; }
+  .nav-icon { margin-right: 0; }
+  .content { margin-left: 72px; }
+}

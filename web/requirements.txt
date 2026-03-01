@@ -1,0 +1,3 @@
+# Зависимости веб-интерфейса (вход через Telegram + сайдбар)
+# Установка: pip install -r web/requirements.txt
+Flask>=3.0
