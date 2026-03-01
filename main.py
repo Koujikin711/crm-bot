@@ -236,7 +236,7 @@ def get_main_menu(uid):
         kb.button(text="🔍 Поиск лида"); kb.button(text="📌 Доработать"); kb.button(text="📥 Поступления лидов")
         kb.button(text=personal)
     elif role == 'manager' and (sphere == 'biz' or sphere is None):
-        kb.button(text="⏳ Дожим"); kb.button(text="✅ Оплачено"); kb.button(text="❌ Отказ"); kb.button(text="📌 Доработать")
+        kb.button(text="👥 Мои клиенты"); kb.button(text="⏳ Дожим"); kb.button(text="✅ Оплачено"); kb.button(text="❌ Отказ"); kb.button(text="📌 Доработать")
     kb.adjust(2)
     return kb.as_markup(resize_keyboard=True)
 
@@ -1972,6 +1972,33 @@ async def p_save(m: types.Message, state: FSMContext):
     d = await state.get_data(); execute_query("UPDATE users SET plan = ? WHERE user_id = ?", (m.text, d['tm']))
     await m.answer(f"✅ План {m.text} сохранен!"); await state.clear()
 
+@dp.message(F.text == "👥 Мои клиенты")
+async def biz_my_clients(m: types.Message):
+    """Менеджер бизнеса: свои лиды, которые ещё не закрыты (новые и в диалоге). Аналог «Мои Пациенты» в медицине."""
+    u = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (m.from_user.id,), fetchone=True)
+    if not u or u[0] != 'manager' or (u[1] != 'biz' and u[1] is not None):
+        return
+    leads = execute_query(
+        "SELECT phone, name, status FROM leads WHERE manager_id = ? AND (direction = 'biz' OR direction IS NULL) AND status IN ('active', 'chatting') ORDER BY last_touch DESC",
+        (m.from_user.id,),
+        fetchall=True,
+    )
+    if not leads:
+        await m.answer("Нет клиентов, которым вы ещё не ответили. Закройте старых в «⏳ Дожим» / «✅ Оплачено» / «❌ Отказ» — тогда будут приходить новые лиды.")
+        return
+    status_label = {"active": "🟢 новый", "chatting": "💬 в диалоге"}
+    lines = ["👥 <b>Мои клиенты</b> — кому вы ещё не ответили:\n"]
+    kb = InlineKeyboardBuilder()
+    for phone, name, st in leads:
+        lbl = status_label.get(st, st)
+        lines.append(f"• {name} ({phone}) — {lbl}")
+        kb.button(text=f"✍️ {name}", callback_data=f"rp_{phone[:30]}")
+        kb.button(text=f"📞 {name}", callback_data=f"show_tel_{phone[:30]}")
+        kb.button(text="📋 Итог звонка", callback_data=f"cl_{phone[:30]}")
+    kb.adjust(3)
+    await m.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb.as_markup())
+
+
 @dp.message(F.text.in_(["⏳ Дожим", "✅ Оплачено", "❌ Отказ"]))
 async def mgr_lists(m: types.Message):
     st_map = {"⏳ Дожим": "thinking", "✅ Оплачено": "closed", "❌ Отказ": "closed"}
@@ -1987,8 +2014,9 @@ async def mgr_lists(m: types.Message):
         kb = InlineKeyboardBuilder()
         for p, n in leads:
             kb.button(text=f"✍️ {n}", callback_data=f"rp_{p[:30]}")
-            kb.button(text=f"📞 {n}", callback_data=f"cl_{p[:30]}")
-        kb.adjust(2)
+            kb.button(text=f"📞 {n}", callback_data=f"show_tel_{p[:30]}")
+            kb.button(text="📋 Итог", callback_data=f"cl_{p[:30]}")
+        kb.adjust(3)
         await m.answer("\n".join(lines), parse_mode="HTML", reply_markup=kb.as_markup())
     else:
         kb = InlineKeyboardBuilder()
