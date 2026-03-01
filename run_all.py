@@ -20,7 +20,10 @@ def run_bot():
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "8080"))
+    port_str = os.environ.get("PORT")
+    if not port_str:
+        raise SystemExit("Задайте переменную окружения PORT (на Amvera она задаётся автоматически)")
+    port = int(port_str)
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
 
