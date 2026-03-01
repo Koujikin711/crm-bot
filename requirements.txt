@@ -5,3 +5,4 @@ aiohttp
 python-dotenv
 fastapi
 uvicorn[standard]
+flask

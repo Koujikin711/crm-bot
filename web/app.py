@@ -10,6 +10,13 @@ _project_root = Path(__file__).resolve().parent.parent
 if str(_project_root) not in __import__("sys").path:
     __import__("sys").path.insert(0, str(_project_root))
 
+# Создаём таблицы в БД, если их ещё нет (та же БД, что у бота)
+try:
+    from db import init_db
+    init_db()
+except Exception:
+    pass
+
 from flask import Flask, redirect, request, session, url_for, render_template
 
 app = Flask(
@@ -124,7 +131,45 @@ def login():
     if session.get("user_id"):
         return redirect(url_for("dashboard"))
     auth_url = request.host_url.rstrip("/") + url_for("auth_telegram")
-    return render_template("login.html", bot_username=BOT_USERNAME, auth_url=auth_url)
+    # Для localhost показываем тестовый вход (без Telegram)
+    is_local = "localhost" in (request.host or "") or "127.0.0.1" in (request.host or "")
+    users = []
+    if is_local:
+        rows = execute_query(
+            "SELECT user_id, COALESCE(fio,''), role, COALESCE(sphere,'') FROM users ORDER BY role, user_id",
+            (),
+            fetchall=True,
+        )
+        users = [{"user_id": r[0], "fio": r[1] or f"ID{r[0]}", "role": r[2], "sphere": r[3]} for r in (rows or [])]
+    return render_template("login.html", bot_username=BOT_USERNAME, auth_url=auth_url, dev_users=users, is_local=is_local)
+
+
+@app.route("/auth/dev", methods=["POST"])
+def auth_dev():
+    """Тестовый вход без Telegram (только localhost)."""
+    if "localhost" not in (request.host or "") and "127.0.0.1" not in (request.host or ""):
+        return redirect(url_for("login") + "?error=invalid")
+    user_id = request.form.get("user_id")
+    if not user_id:
+        return redirect(url_for("login") + "?error=no_id")
+    try:
+        user_id = int(user_id)
+    except ValueError:
+        return redirect(url_for("login") + "?error=bad_id")
+    row = execute_query(
+        "SELECT role, sphere, COALESCE(fio,''), COALESCE(can_receive_leads,0) FROM users WHERE user_id = ?",
+        (user_id,),
+        fetchone=True,
+    )
+    if not row:
+        return redirect(url_for("login") + "?error=not_found")
+    role, sphere, fio, can_receive_leads = row[0], row[1], row[2], row[3]
+    session["user_id"] = user_id
+    session["role"] = role
+    session["sphere"] = sphere if sphere else None
+    session["fio"] = fio or f"User {user_id}"
+    session["can_receive_leads"] = can_receive_leads
+    return redirect(url_for("dashboard"))
 
 
 @app.route("/auth/telegram", methods=["GET"])
