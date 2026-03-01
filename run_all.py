@@ -20,7 +20,7 @@ def run_bot():
 
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", "5000"))
+    port = int(os.environ.get("PORT", "8080"))
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
 
