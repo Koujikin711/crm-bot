@@ -97,6 +97,10 @@ async def run_client(phone: str, api_id: str, api_hash: str, session_path: str, 
         await _client.start(phone=phone or None)
         logger.info("tg_leads: client started for %s", phone or session_path)
         await _client.run_until_disconnected()
+    except EOFError:
+        logger.warning(
+            "tg_leads: на Amvera нет консоли для ввода кода. Запустите на своём ПК: python tg_login_once.py — введите код, затем загрузите файл tg_leads_session.session на Amvera (секретный файл / том). См. TELEGRAM_LEADS.md"
+        )
     except Exception as e:
         logger.exception("tg_leads run: %s", e)
     finally:
