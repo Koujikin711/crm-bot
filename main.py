@@ -2938,6 +2938,9 @@ async def main():
     if _tg_leads and TELEGRAM_LEADS_PHONE and TELEGRAM_API_ID and TELEGRAM_API_HASH:
         asyncio.create_task(_tg_leads.run_client(TELEGRAM_LEADS_PHONE, TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION_PATH, _on_telegram_lead_message))
         logging.info("tg_leads: task started for %s", TELEGRAM_LEADS_PHONE)
+    else:
+        if not (TELEGRAM_LEADS_PHONE and TELEGRAM_API_ID and TELEGRAM_API_HASH):
+            logging.info("tg_leads: не запущен — задайте TELEGRAM_LEADS_PHONE, TELEGRAM_API_ID, TELEGRAM_API_HASH в переменных Amvera")
     asyncio.create_task(job_remind_24h())
     asyncio.create_task(job_chatting_idle())
     asyncio.create_task(job_tasks_reminder())
