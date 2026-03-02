@@ -112,6 +112,38 @@ async def try_assign_queued_lead_to_manager(manager_id: int, direction: str):
         execute_query("UPDATE leads SET manager_id = NULL, status = 'pending' WHERE phone = ?", (phone,))
         execute_query("UPDATE users SET is_busy = 0 WHERE user_id = ?", (manager_id,))
 
+async def distribute_pending_biz_leads() -> int:
+    """Распределить все pending-лиды бизнеса по свободным менеджерам. Возвращает число назначенных."""
+    cond = "(direction = 'biz' OR direction IS NULL)"
+    assigned = 0
+    while True:
+        row = execute_query(
+            f"SELECT phone, name FROM leads WHERE status = 'pending' AND {cond} ORDER BY last_touch ASC LIMIT 1",
+            (),
+            fetchone=True,
+        )
+        if not row:
+            break
+        phone, name = row[0], row[1] or row[0]
+        target = get_free_manager_for_direction('biz')
+        if not target:
+            logging.info("[CRM] distribute_pending_biz: свободных менеджеров нет, осталось в очереди")
+            break
+        now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        execute_query("UPDATE leads SET manager_id = ?, status = 'active', last_touch = ? WHERE phone = ?", (target, now_iso, phone))
+        execute_query("UPDATE users SET is_busy = 1 WHERE user_id = ?", (target,))
+        kb = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone[:30]}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone[:30]}").adjust(2).as_markup()
+        try:
+            await bot.send_message(target, f"📥 <b>Лид из очереди</b>\n👤 {name}\n📞 {phone}", reply_markup=kb, parse_mode="HTML")
+            assigned += 1
+            logging.info("[CRM] distribute_pending_biz: лид %s -> менеджер %s", phone, target)
+        except Exception as e:
+            logging.exception("[CRM] distribute_pending_biz: отправка менеджеру %s: %s", target, e)
+            execute_query("UPDATE leads SET manager_id = NULL, status = 'pending' WHERE phone = ?", (phone,))
+            execute_query("UPDATE users SET is_busy = 0 WHERE user_id = ?", (target,))
+            break
+    return assigned
+
 def get_free_manager_for_direction(direction: str):
     """Менеджер свободен: is_busy=0 И нет лидов active/chatting за ним. Для бизнеса учитывается глобальный leads_enabled (по умолчанию вкл)."""
     if direction == 'med':
@@ -258,6 +290,7 @@ def get_owner_biz_menu():
     kb.button(text="📋 Лиды в работе"); kb.button(text="💬 Начать диалог")
     kb.button(text="🔍 Поиск лида"); kb.button(text="📥 Поступления лидов")
     kb.button(text=l_btn)
+    kb.button(text="📋 Распределить лиды")
     kb.button(text="📌 Доработать"); kb.button(text="👤 Назначить админа бизнеса"); kb.button(text="👑 Дать права владельца")
     kb.button(text="📂 Загрузка данных"); kb.button(text="⏱ Время в работе"); kb.button(text="🔥 Уволить"); kb.button(text="🎯 Поставить План")
     kb.button(text="◀ Назад")
@@ -2032,6 +2065,14 @@ async def tgl(m: types.Message):
     c = execute_query("SELECT value FROM settings WHERE key = 'leads_enabled'", fetchone=True)
     v = '0' if c and c[0] == '1' else '1'; execute_query("INSERT OR REPLACE INTO settings (key, value) VALUES ('leads_enabled', ?)", (v,))
     await m.answer(f"Статус: {'ВКЛ' if v=='1' else 'ВЫКЛ'}", reply_markup=get_main_menu(m.from_user.id))
+
+@dp.message(F.text == "📋 Распределить лиды")
+async def distribute_leads_now(m: types.Message):
+    """Владелец: раздать все pending-лиды бизнеса свободным менеджерам."""
+    if not is_owner(m.from_user.id):
+        return
+    n = await distribute_pending_biz_leads()
+    await m.answer(f"✅ Распределено лидов: {n}. Остальные остались в очереди до освобождения менеджеров.", reply_markup=get_main_menu(m.from_user.id))
 
 @dp.message(F.text == "📋 Лиды в работе")
 async def wl(m: types.Message, state: FSMContext):
