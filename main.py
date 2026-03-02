@@ -152,7 +152,7 @@ async def distribute_pending_biz_leads() -> int:
     return assigned
 
 def get_free_manager_for_direction(direction: str):
-    """Менеджер свободен: is_busy=0 И нет лидов active/chatting за ним. Для бизнеса учитывается глобальный leads_enabled (по умолчанию вкл)."""
+    """Менеджер свободен: нет лидов active/chatting за ним (is_busy не учитываем — может застрять). Для бизнеса учитывается глобальный leads_enabled (по умолчанию вкл)."""
     if direction == 'med':
         role_cond = "LOWER(role)='manager' AND sphere='med'"
         lead_cond = "direction = 'med'"
@@ -164,7 +164,7 @@ def get_free_manager_for_direction(direction: str):
         lead_cond = "(direction = 'biz' OR direction IS NULL)"
     row = execute_query(
         f"""SELECT u.user_id FROM users u
-            WHERE ({role_cond}) AND COALESCE(u.is_busy, 0) = 0
+            WHERE ({role_cond})
             AND NOT EXISTS (SELECT 1 FROM leads l WHERE l.manager_id = u.user_id AND l.status IN ('active', 'chatting') AND ({lead_cond}))
             ORDER BY u.user_id LIMIT 1""",
         (),
@@ -2178,8 +2178,18 @@ async def distribute_leads_now(m: types.Message):
     """Владелец: раздать все pending-лиды бизнеса свободным менеджерам."""
     if not is_owner(m.from_user.id):
         return
+    cond = "(direction = 'biz' OR direction IS NULL)"
     n = await distribute_pending_biz_leads()
-    await m.answer(f"✅ Распределено лидов: {n}. Остальные остались в очереди до освобождения менеджеров.", reply_markup=get_main_menu(m.from_user.id))
+    pending_after = execute_query(f"SELECT COUNT(*) FROM leads WHERE status = 'pending' AND {cond}", (), fetchone=True)[0] or 0
+    total_biz_mgrs = execute_query(
+        "SELECT COUNT(*) FROM users u WHERE (LOWER(u.role)='manager' AND (u.sphere='biz' OR u.sphere IS NULL)) OR (LOWER(u.role)='admin' AND (u.sphere='biz' OR u.sphere IS NULL) AND COALESCE(u.can_receive_leads,0)=1)",
+        (),
+        fetchone=True,
+    )[0] or 0
+    msg = f"✅ Распределено лидов: {n}. В очереди осталось: {pending_after}."
+    if n == 0 and pending_after > 0:
+        msg += f"\n\nСвободных менеджеров бизнеса нет (все {total_biz_mgrs} заняты). Когда менеджер закроет лид — ему автоматически выдастся следующий из очереди."
+    await m.answer(msg, reply_markup=get_main_menu(m.from_user.id))
 
 @dp.message(F.text == "📋 Лиды в работе")
 async def wl(m: types.Message, state: FSMContext):
@@ -2916,6 +2926,18 @@ async def debug_med(m: types.Message):
     for ph, name, mid in med_leads:
         lines.append(f"  {name} {ph} → manager_id={mid}")
     await m.answer("\n".join(lines), parse_mode="HTML")
+
+@dp.message(Command("fix_biz_busy"))
+async def fix_biz_busy(m: types.Message):
+    """Владелец: сбросить is_busy у тех менеджеров бизнеса, у кого нет лидов в работе (active/chatting). Исправляет «застрявший» флаг."""
+    if not is_owner(m.from_user.id):
+        return
+    cond = "(direction = 'biz' OR direction IS NULL)"
+    execute_query(
+        """UPDATE users SET is_busy = 0 WHERE (LOWER(role)='manager' AND (sphere='biz' OR sphere IS NULL)) OR (LOWER(role)='admin' AND (sphere='biz' OR sphere IS NULL) AND COALESCE(can_receive_leads,0)=1)
+           AND NOT EXISTS (SELECT 1 FROM leads l WHERE l.manager_id = users.user_id AND l.status IN ('active', 'chatting') AND (l.direction = 'biz' OR l.direction IS NULL))"""
+    )
+    await m.answer("✅ Сброшен is_busy у менеджеров бизнеса без активных лидов. Нажми «📋 Распределить лиды» — лиды из очереди раздадутся.")
 
 @dp.message(Command("clear_db"))
 async def clear_db(m: types.Message):
