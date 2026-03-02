@@ -17,6 +17,9 @@ env/
 .env.local
 *.env
 
+# Сессия Telethon (чувствительные данные; один раз закоммичена для Amvera)
+# *.session
+
 # IDE
 .idea/
 .vscode/
