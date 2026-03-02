@@ -86,7 +86,7 @@ async def try_assign_queued_lead_to_manager(manager_id: int, direction: str):
     """После закрытия лида: если есть лид в очереди (status=pending), назначить его этому менеджеру. Для бизнеса — только если глобально лиды включены."""
     if direction != 'med':
         l_on = execute_query("SELECT value FROM settings WHERE key = 'leads_enabled'", fetchone=True)
-        if not l_on or l_on[0] != '1':
+        if l_on is not None and str(l_on[0]).strip() == '0':
             return
     if direction == 'med':
         cond = "direction = 'med'"
@@ -113,13 +113,13 @@ async def try_assign_queued_lead_to_manager(manager_id: int, direction: str):
         execute_query("UPDATE users SET is_busy = 0 WHERE user_id = ?", (manager_id,))
 
 def get_free_manager_for_direction(direction: str):
-    """Менеджер свободен: is_busy=0 И нет лидов active/chatting за ним. Для бизнеса учитывается глобальный leads_enabled."""
+    """Менеджер свободен: is_busy=0 И нет лидов active/chatting за ним. Для бизнеса учитывается глобальный leads_enabled (по умолчанию вкл)."""
     if direction == 'med':
         role_cond = "LOWER(role)='manager' AND sphere='med'"
         lead_cond = "direction = 'med'"
     else:
         l_on = execute_query("SELECT value FROM settings WHERE key = 'leads_enabled'", fetchone=True)
-        if not l_on or l_on[0] != '1':
+        if l_on is not None and str(l_on[0]).strip() == '0':
             return None
         role_cond = "(LOWER(role)='manager' AND (sphere='biz' OR sphere IS NULL)) OR (LOWER(role)='admin' AND (sphere='biz' OR sphere IS NULL) AND COALESCE(can_receive_leads,0)=1)"
         lead_cond = "(direction = 'biz' OR direction IS NULL)"
