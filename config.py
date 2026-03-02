@@ -26,3 +26,9 @@ DOCTOR_LIMITS = {"assistant": 10, "ganchina": 5}
 CHATTING_IDLE_MINUTES = 20
 REMINDER_24H_HOURS = 24
 REMINDER_24H_WINDOW_HOURS = 48
+
+# Telegram-аккаунт для приёма лидов (MTProto; опционально)
+TELEGRAM_LEADS_PHONE = os.environ.get("TELEGRAM_LEADS_PHONE", "").strip()  # например +992877631000
+TELEGRAM_API_ID = os.environ.get("TELEGRAM_API_ID", "")
+TELEGRAM_API_HASH = os.environ.get("TELEGRAM_API_HASH", "")
+TELEGRAM_SESSION_PATH = os.environ.get("TELEGRAM_SESSION_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "tg_leads_session"))

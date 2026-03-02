@@ -4,6 +4,7 @@ import json
 import aiohttp
 import sqlite3
 import os
+import tempfile
 import pandas as pd
 from datetime import datetime, timedelta, date
 from aiogram import Bot, Dispatcher, types, F
@@ -19,8 +20,14 @@ from config import (
     MED_ID_INSTANCE, MED_API_TOKEN, MED_API_URL,
     DB_PATH, OWNER_ID, DOCTOR_LIMITS, CHATTING_IDLE_MINUTES,
     REMINDER_24H_HOURS, REMINDER_24H_WINDOW_HOURS,
+    TELEGRAM_LEADS_PHONE, TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION_PATH,
 )
 from db import execute_query, init_db
+
+try:
+    import tg_leads_client as _tg_leads
+except ImportError:
+    _tg_leads = None
 
 # Глобальная aiohttp-сессия для Green API (создаётся в main())
 g_http_session: aiohttp.ClientSession = None
@@ -221,6 +228,67 @@ def _wa_urls(sphere):
     )
 
 async def send_to_wa(phone, m: types.Message, sphere='biz'):
+    """Отправить сообщение в WA или в Telegram-аккаунт лидов (если phone = tg_<user_id>)."""
+    if str(phone).startswith("tg_"):
+        try:
+            peer_id = int(str(phone)[3:].strip().split("_")[0] or "0")
+        except (ValueError, IndexError):
+            return
+        if _tg_leads and _tg_leads.is_available():
+            if m.text:
+                await _tg_leads.send_message_to_lead(peer_id, m.text)
+            elif m.photo:
+                try:
+                    f = await bot.get_file(m.photo[-1].file_id)
+                    with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
+                        await bot.download_file(f.file_path, tmp.name)
+                        await _tg_leads.send_media_to_lead(peer_id, tmp.name, caption=m.caption, is_photo=True)
+                    try:
+                        os.unlink(tmp.name)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    logging.warning("tg_leads send photo: %s", e)
+            elif m.voice:
+                try:
+                    f = await bot.get_file(m.voice.file_id)
+                    with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as tmp:
+                        await bot.download_file(f.file_path, tmp.name)
+                        await _tg_leads.send_media_to_lead(peer_id, tmp.name, caption=m.caption, is_photo=False)
+                    try:
+                        os.unlink(tmp.name)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    logging.warning("tg_leads send voice: %s", e)
+            elif m.video:
+                try:
+                    f = await bot.get_file(m.video.file_id)
+                    with tempfile.NamedTemporaryFile(suffix=".mp4", delete=False) as tmp:
+                        await bot.download_file(f.file_path, tmp.name)
+                        await _tg_leads.send_media_to_lead(peer_id, tmp.name, caption=m.caption, is_photo=False)
+                    try:
+                        os.unlink(tmp.name)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    logging.warning("tg_leads send video: %s", e)
+            elif m.document:
+                try:
+                    f = await bot.get_file(m.document.file_id)
+                    ext = os.path.splitext(m.document.file_name or "")[1] or ".bin"
+                    with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+                        await bot.download_file(f.file_path, tmp.name)
+                        await _tg_leads.send_media_to_lead(peer_id, tmp.name, caption=m.caption, is_photo=False)
+                    try:
+                        os.unlink(tmp.name)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    logging.warning("tg_leads send document: %s", e)
+            else:
+                await _tg_leads.send_message_to_lead(peer_id, "[медиа]")
+        return
     chat_id = f"{phone}@c.us"
     u_send, u_file = _wa_urls(sphere)
     if m.text:
@@ -357,6 +425,10 @@ def get_lead_phone_by_prefix(phone_prefix: str):
     row = execute_query("SELECT phone FROM leads WHERE phone = ?", (phone_prefix,), fetchone=True)
     if row:
         return row[0]
+    if phone_prefix.isdigit():
+        row = execute_query("SELECT phone FROM leads WHERE phone = ?", (f"tg_{phone_prefix}",), fetchone=True)
+        if row:
+            return row[0]
     row = execute_query(
         "SELECT phone FROM leads WHERE length(phone) >= ? AND substr(phone, 1, ?) = ? LIMIT 1",
         (len(phone_prefix), len(phone_prefix), phone_prefix),
@@ -768,6 +840,41 @@ async def check_wa_biz():
 
 async def check_wa_med():
     await _process_wa_instance('med', MED_API_URL, MED_ID_INSTANCE, MED_API_TOKEN)
+
+async def _on_telegram_lead_message(peer_id: int, name: str, text: str, has_media: bool):
+    """Входящие с Telegram-аккаунта лидов — только направление БИЗНЕС: создать лид или переслать менеджеру."""
+    phone = f"tg_{peer_id}"
+    now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    row = execute_query("SELECT manager_id FROM leads WHERE phone = ?", (phone,), fetchone=True)
+    if not row:
+        target = get_free_manager_for_direction('biz')
+        if target:
+            execute_query("UPDATE users SET is_busy=1 WHERE user_id=?", (target,))
+            execute_query(
+                "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at, source) VALUES (?, ?, 'active', ?, ?, 1, 'biz', ?, 'Telegram')",
+                (phone, name, target, now_iso, now_iso),
+            )
+            kb = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone[:30]}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone[:30]}").adjust(2).as_markup()
+            try:
+                await bot.send_message(target, f"📥 <b>НОВЫЙ ЛИД (Telegram)</b>\n👤 {name}\n🆔 {peer_id}", reply_markup=kb, parse_mode="HTML")
+            except Exception as e:
+                logging.exception("tg_lead send to manager %s: %s", target, e)
+            logging.info("tg_lead: new lead %s -> manager %s", phone, target)
+        else:
+            execute_query(
+                "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at, source) VALUES (?, ?, 'pending', NULL, ?, 1, 'biz', ?, 'Telegram')",
+                (phone, name, now_iso, now_iso),
+            )
+            logging.warning("tg_lead: all busy, lead %s in queue", phone)
+    else:
+        mgr_id = row[0]
+        kb = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone[:30]}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone[:30]}").adjust(2).as_markup()
+        try:
+            await bot.send_message(mgr_id, f"💬 <b>{name}</b> (Telegram):\n{text}", reply_markup=kb, parse_mode="HTML")
+        except Exception as e:
+            logging.warning("tg_lead forward to manager %s: %s", mgr_id, e)
+    log_lead_event(phone, "incoming", (text or "[медиа]")[:200], None)
+    execute_query("UPDATE leads SET last_touch = ? WHERE phone = ?", (now_iso, phone))
 
 async def _wa_send_reminder(instance_name: str):
     """Отправить напоминание (таджикский текст) в WA тем, кому не отвечали 24+ ч."""
@@ -2828,6 +2935,9 @@ async def main():
     logging.info("MED Green API: idInstance=%s", MED_ID_INSTANCE)
     asyncio.create_task(check_wa_biz())
     asyncio.create_task(check_wa_med())
+    if _tg_leads and TELEGRAM_LEADS_PHONE and TELEGRAM_API_ID and TELEGRAM_API_HASH:
+        asyncio.create_task(_tg_leads.run_client(TELEGRAM_LEADS_PHONE, TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION_PATH, _on_telegram_lead_message))
+        logging.info("tg_leads: task started for %s", TELEGRAM_LEADS_PHONE)
     asyncio.create_task(job_remind_24h())
     asyncio.create_task(job_chatting_idle())
     asyncio.create_task(job_tasks_reminder())
