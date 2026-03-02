@@ -6,4 +6,4 @@ meta:
 build:
   requirementsPath: requirements.txt
 run:
-  scriptName: run_all.py
+  scriptName: main.py

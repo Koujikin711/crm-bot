@@ -227,8 +227,6 @@ def dashboard():
 
 
 if __name__ == "__main__":
-    # Порт только из переменной PORT (Amvera передаёт автоматически; локально: set PORT=5000)
-    port = os.environ.get("PORT")
-    if not port:
-        raise SystemExit("Задайте переменную окружения PORT (например PORT=5000)")
-    app.run(host="0.0.0.0", port=int(port), debug=True)
+    # Порт из PORT или 80 (локальный запуск)
+    port = int(os.environ.get("PORT", "80"))
+    app.run(host="0.0.0.0", port=port, debug=True)

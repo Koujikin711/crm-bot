@@ -20,9 +20,8 @@ def run_bot():
 
 
 if __name__ == "__main__":
-    port_str = os.environ.get("PORT")
-    if not port_str:
-        raise SystemExit("Задайте переменную окружения PORT (на Amvera она задаётся автоматически)")
+    # Для локального запуска веб+бот: порт из PORT или 80
+    port_str = os.environ.get("PORT", "80")
     port = int(port_str)
     bot_thread = threading.Thread(target=run_bot, daemon=True)
     bot_thread.start()
