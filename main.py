@@ -24,6 +24,9 @@ from config import (
 )
 from db import execute_query, init_db
 
+# Условие «лид бизнеса» в SQL (включая пустой direction)
+BIZ_LEAD_COND = "(direction = 'biz' OR direction IS NULL OR TRIM(COALESCE(direction,''))='')"
+
 try:
     import tg_leads_client as _tg_leads
 except ImportError:
@@ -98,7 +101,7 @@ async def try_assign_queued_lead_to_manager(manager_id: int, direction: str):
     if direction == 'med':
         cond = "direction = 'med'"
     else:
-        cond = "(direction = 'biz' OR direction IS NULL)"
+        cond = BIZ_LEAD_COND
     row = execute_query(
         f"SELECT phone, name FROM leads WHERE status = 'pending' AND {cond} ORDER BY last_touch ASC LIMIT 1",
         (),
@@ -121,7 +124,7 @@ async def try_assign_queued_lead_to_manager(manager_id: int, direction: str):
 
 async def distribute_pending_biz_leads() -> int:
     """Распределить все pending-лиды бизнеса по свободным менеджерам. Возвращает число назначенных."""
-    cond = "(direction = 'biz' OR direction IS NULL)"
+    cond = BIZ_LEAD_COND
     assigned = 0
     while True:
         row = execute_query(
@@ -161,7 +164,7 @@ def get_free_manager_for_direction(direction: str):
         if l_on is not None and str(l_on[0]).strip() == '0':
             return None
         role_cond = "(LOWER(role)='manager' AND (sphere='biz' OR sphere IS NULL OR TRIM(COALESCE(sphere,''))='')) OR (LOWER(role)='admin' AND (sphere='biz' OR sphere IS NULL OR TRIM(COALESCE(sphere,''))='') AND COALESCE(can_receive_leads,0)=1)"
-        lead_cond = "(direction = 'biz' OR direction IS NULL)"
+        lead_cond = BIZ_LEAD_COND
     row = execute_query(
         f"""SELECT u.user_id FROM users u
             WHERE ({role_cond})
@@ -883,7 +886,7 @@ async def _wa_send_reminder(instance_name: str):
         cond = "direction = 'med'"
     else:
         base_url, iid, token = API_URL, ID_INSTANCE, API_TOKEN_INSTANCE
-        cond = "(direction = 'biz' OR direction IS NULL)"
+        cond = BIZ_LEAD_COND
     send_url = f"{base_url}/waInstance{iid}/sendMessage/{token}"
     already = set(r[0] for r in execute_query("SELECT phone FROM reminded_24h WHERE sphere = ?", (instance_name,), fetchall=True))
     rows = execute_query(f"SELECT phone FROM leads WHERE {cond}", fetchall=True)
@@ -1059,7 +1062,7 @@ async def back_main(m: types.Message, state: FSMContext):
 
 # --- Бизнес: статистика (только для владельца/админа в контексте бизнеса) ---
 def _biz_leads_cond():
-    return " (direction = 'biz' OR direction IS NULL) "
+    return " " + BIZ_LEAD_COND + " "
 
 @dp.message(F.text == "📈 Статистика")
 async def stats(m: types.Message):
@@ -1083,10 +1086,10 @@ async def mgr_kpi(m: types.Message):
         sphere = row[3] if len(row) > 3 else None
         if sphere == 'med':
             continue
-        m_all = execute_query("SELECT COUNT(*) FROM leads WHERE manager_id=? AND (direction = 'biz' OR direction IS NULL)", (mid,), fetchone=True)[0] or 1
-        m_ans = execute_query("SELECT COUNT(*) FROM leads WHERE manager_id=? AND is_answered=1 AND (direction = 'biz' OR direction IS NULL)", (mid,), fetchone=True)[0]
-        m_sold = execute_query("SELECT COUNT(*) FROM leads WHERE manager_id=? AND status='closed' AND is_answered=1 AND (comment IS NULL OR comment NOT LIKE '%Автозакрытие%') AND (direction = 'biz' OR direction IS NULL)", (mid,), fetchone=True)[0]
-        m_t = execute_query("SELECT AVG(touches) FROM leads WHERE manager_id=? AND (direction = 'biz' OR direction IS NULL)", (mid,), fetchone=True)[0] or 0
+        m_all = execute_query(f"SELECT COUNT(*) FROM leads WHERE manager_id=? AND {BIZ_LEAD_COND}", (mid,), fetchone=True)[0] or 1
+        m_ans = execute_query(f"SELECT COUNT(*) FROM leads WHERE manager_id=? AND is_answered=1 AND {BIZ_LEAD_COND}", (mid,), fetchone=True)[0]
+        m_sold = execute_query(f"SELECT COUNT(*) FROM leads WHERE manager_id=? AND status='closed' AND is_answered=1 AND (comment IS NULL OR comment NOT LIKE '%Автозакрытие%') AND {BIZ_LEAD_COND}", (mid,), fetchone=True)[0]
+        m_t = execute_query(f"SELECT AVG(touches) FROM leads WHERE manager_id=? AND {BIZ_LEAD_COND}", (mid,), fetchone=True)[0] or 0
         perc = round((m_sold / (plan or 1)) * 100, 1)
         conv = round((m_ans / m_all) * 100, 1)
         txt += f"▪️ <b>{fio}</b>\n   План: {perc}% ({m_sold}/{plan})\n   Дозвон: {conv}%\n   Ср. касаний: {round(m_t, 1)}\n\n"
@@ -1130,7 +1133,7 @@ async def biz_leads_flow_cb(c: types.CallbackQuery, state: FSMContext):
     end = now
     start_str = start.strftime("%Y-%m-%d %H:%M:%S")
     end_str = end.strftime("%Y-%m-%d %H:%M:%S")
-    cond = " (direction = 'biz' OR direction IS NULL) "
+    cond = " " + BIZ_LEAD_COND + " "
     total = execute_query(
         f"SELECT COUNT(*) FROM leads WHERE {cond} AND created_at BETWEEN ? AND ?",
         (start_str, end_str),
@@ -1176,7 +1179,7 @@ async def biz_leads_flow_custom_period(m: types.Message, state: FSMContext):
     end_dt = datetime.combine(d2, datetime.max.time()).replace(microsecond=0)
     start_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
     end_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")
-    cond = " (direction = 'biz' OR direction IS NULL) "
+    cond = " " + BIZ_LEAD_COND + " "
     total = execute_query(
         f"SELECT COUNT(*) FROM leads WHERE {cond} AND created_at BETWEEN ? AND ?",
         (start_str, end_str),
@@ -1393,7 +1396,7 @@ async def lead_search_query(m: types.Message, state: FSMContext):
         return
     digits = "".join(c for c in q if c.isdigit())
     if allowed_sphere == "biz":
-        sphere_cond = " AND (direction = 'biz' OR direction IS NULL)"
+        sphere_cond = " AND " + BIZ_LEAD_COND
     elif allowed_sphere == "med":
         sphere_cond = " AND direction = 'med'"
     else:
@@ -2119,7 +2122,7 @@ async def biz_my_clients(m: types.Message):
     if not u or u[0] != 'manager' or (u[1] != 'biz' and u[1] is not None):
         return
     leads = execute_query(
-        "SELECT phone, name, status FROM leads WHERE manager_id = ? AND (direction = 'biz' OR direction IS NULL) AND status IN ('active', 'chatting') ORDER BY last_touch DESC",
+        "SELECT phone, name, status FROM leads WHERE manager_id = ? AND " + BIZ_LEAD_COND + " AND status IN ('active', 'chatting') ORDER BY last_touch DESC",
         (m.from_user.id,),
         fetchall=True,
     )
@@ -2142,7 +2145,7 @@ async def biz_my_clients(m: types.Message):
 @dp.message(F.text.in_(["⏳ Дожим", "✅ Оплачено", "❌ Отказ"]))
 async def mgr_lists(m: types.Message):
     st_map = {"⏳ Дожим": "thinking", "✅ Оплачено": "closed", "❌ Отказ": "closed"}
-    leads = execute_query("SELECT phone, name FROM leads WHERE manager_id = ? AND status = ? AND (direction = 'biz' OR direction IS NULL)", (m.from_user.id, st_map[m.text]), fetchall=True)
+    leads = execute_query("SELECT phone, name FROM leads WHERE manager_id = ? AND status = ? AND " + BIZ_LEAD_COND, (m.from_user.id, st_map[m.text]), fetchall=True)
     if not leads:
         if m.text == "⏳ Дожим":
             return await m.answer("⏳ Дожим — клиенты в ожидании (не ответили / думает).\n\nСписок пуст.")
@@ -2178,7 +2181,7 @@ async def distribute_leads_now(m: types.Message):
     """Владелец: раздать все pending-лиды бизнеса свободным менеджерам."""
     if not is_owner(m.from_user.id):
         return
-    cond = "(direction = 'biz' OR direction IS NULL)"
+    cond = BIZ_LEAD_COND
     n = await distribute_pending_biz_leads()
     pending_after = execute_query(f"SELECT COUNT(*) FROM leads WHERE status = 'pending' AND {cond}", (), fetchone=True)[0] or 0
     total_biz_mgrs = execute_query(
@@ -2188,7 +2191,14 @@ async def distribute_leads_now(m: types.Message):
     )[0] or 0
     msg = f"✅ Распределено лидов: {n}. В очереди осталось: {pending_after}."
     if n == 0 and pending_after > 0:
+        in_progress = execute_query(
+            f"SELECT COUNT(*) FROM leads WHERE status IN ('active', 'chatting') AND manager_id IS NOT NULL AND {cond}",
+            (),
+            fetchone=True,
+        )[0] or 0
         msg += f"\n\nСвободных менеджеров бизнеса нет (все {total_biz_mgrs} заняты). Когда менеджер закроет лид — ему автоматически выдастся следующий из очереди."
+        if in_progress > 0:
+            msg += f"\n\nДиагностика: лидов «в работе» (бизнес): {in_progress} — они занимают менеджеров. Используйте /biz_back_to_queue, чтобы вернуть их в очередь."
     await m.answer(msg, reply_markup=get_main_menu(m.from_user.id))
 
 @dp.message(F.text == "📋 Лиды в работе")
@@ -2203,7 +2213,7 @@ async def wl(m: types.Message, state: FSMContext):
         cond = "status IN ('active', 'chatting') AND direction = 'med' AND manager_id IS NOT NULL"
         title = "📋 <b>В РАБОТЕ (Медицина):</b>"
     else:
-        cond = "status IN ('active', 'chatting') AND (direction = 'biz' OR direction IS NULL) AND manager_id IS NOT NULL"
+        cond = "status IN ('active', 'chatting') AND " + BIZ_LEAD_COND + " AND manager_id IS NOT NULL"
         title = "📋 <b>В РАБОТЕ (Бизнес):</b>"
     rows = execute_query(
         f"SELECT l.phone, l.name, l.manager_id, l.status FROM leads l WHERE {cond} ORDER BY l.last_touch DESC",
@@ -2486,7 +2496,7 @@ async def export_biz_all_cb(c: types.CallbackQuery):
     import tempfile
     path = os.path.join(tempfile.gettempdir(), "crm.xlsx")
     with sqlite3.connect(DB_PATH) as conn:
-        pd.read_sql_query("SELECT * FROM leads WHERE (direction = 'biz' OR direction IS NULL)", conn).to_excel(path, index=False)
+        pd.read_sql_query("SELECT * FROM leads WHERE " + BIZ_LEAD_COND, conn).to_excel(path, index=False)
     await c.message.answer_document(types.FSInputFile(path))
     await c.answer()
 
@@ -2519,7 +2529,7 @@ async def export_biz_period_done(m: types.Message, state: FSMContext):
     path = os.path.join(tempfile.gettempdir(), "crm_export.xlsx")
     with sqlite3.connect(DB_PATH) as conn:
         pd.read_sql_query(
-            "SELECT * FROM leads WHERE (direction = 'biz' OR direction IS NULL) AND created_at BETWEEN ? AND ?",
+            "SELECT * FROM leads WHERE " + BIZ_LEAD_COND + " AND created_at BETWEEN ? AND ?",
             (start_str, end_str), conn
         ).to_excel(path, index=False)
     await m.answer_document(types.FSInputFile(path))
@@ -2532,7 +2542,7 @@ async def time_in_work_report(m: types.Message):
     if not u or u[0] != 'owner':
         return
     lines = ["⏱ <b>Среднее время в работе</b> (от создания лида до закрытия):\n"]
-    for direction, cond in [("Бизнес", "(direction = 'biz' OR direction IS NULL)"), ("Медицина", "direction = 'med'")]:
+    for direction, cond in [("Бизнес", BIZ_LEAD_COND), ("Медицина", "direction = 'med'")]:
         row = execute_query(
             f"SELECT AVG((julianday(closed_at) - julianday(created_at)) * 24) FROM leads WHERE status = 'closed' AND closed_at IS NOT NULL AND created_at IS NOT NULL AND {cond}",
             (), fetchone=True)
@@ -2541,7 +2551,7 @@ async def time_in_work_report(m: types.Message):
             lines.append(f"▪️ {direction}: {round(avg_h, 1)} ч")
         else:
             lines.append(f"▪️ {direction}: {round(avg_h / 24, 1)} дн")
-    cnt_biz = execute_query("SELECT COUNT(*) FROM leads WHERE status = 'closed' AND closed_at IS NOT NULL AND created_at IS NOT NULL AND (direction = 'biz' OR direction IS NULL)", (), fetchone=True)[0] or 0
+    cnt_biz = execute_query("SELECT COUNT(*) FROM leads WHERE status = 'closed' AND closed_at IS NOT NULL AND created_at IS NOT NULL AND " + BIZ_LEAD_COND, (), fetchone=True)[0] or 0
     cnt_med = execute_query("SELECT COUNT(*) FROM leads WHERE status = 'closed' AND closed_at IS NOT NULL AND created_at IS NOT NULL AND direction = 'med'", (), fetchone=True)[0] or 0
     lines.append(f"\n(по {cnt_biz} и {cnt_med} закрытым лидам)")
     await m.answer("\n".join(lines), parse_mode="HTML")
@@ -2932,7 +2942,7 @@ async def fix_biz_busy(m: types.Message):
     """Владелец: сбросить is_busy у тех менеджеров бизнеса, у кого нет лидов в работе (active/chatting). Исправляет «застрявший» флаг."""
     if not is_owner(m.from_user.id):
         return
-    cond = "(direction = 'biz' OR direction IS NULL)"
+    cond = BIZ_LEAD_COND
     execute_query(
         """UPDATE users SET is_busy = 0 WHERE (LOWER(role)='manager' AND (sphere='biz' OR sphere IS NULL OR TRIM(COALESCE(sphere,''))='')) OR (LOWER(role)='admin' AND (sphere='biz' OR sphere IS NULL OR TRIM(COALESCE(sphere,''))='') AND COALESCE(can_receive_leads,0)=1)
            AND NOT EXISTS (SELECT 1 FROM leads l WHERE l.manager_id = users.user_id AND l.status IN ('active', 'chatting') AND (l.direction = 'biz' OR l.direction IS NULL))"""
@@ -2949,7 +2959,7 @@ async def debug_biz(m: types.Message):
         (),
         fetchall=True,
     )
-    lead_cond = "(direction = 'biz' OR direction IS NULL)"
+    lead_cond = BIZ_LEAD_COND
     lines = ["🔍 <b>DEBUG: Бизнес</b>\n"]
     if not mgrs:
         lines.append("❌ Менеджеров бизнеса в базе нет.")
@@ -2975,7 +2985,7 @@ async def biz_back_to_queue(m: types.Message):
     if not is_owner(m.from_user.id):
         return
     execute_query(
-        "UPDATE leads SET status = 'pending', manager_id = NULL WHERE (direction = 'biz' OR direction IS NULL) AND status IN ('active', 'chatting')"
+        f"UPDATE leads SET status = 'pending', manager_id = NULL WHERE {BIZ_LEAD_COND} AND status IN ('active', 'chatting')"
     )
     execute_query("UPDATE users SET is_busy = 0")
     await m.answer("✅ Все лиды бизнеса «в работе» переведены в очередь. Менеджеры свободны. Нажми «📋 Распределить лиды» — раздадутся из очереди.")
