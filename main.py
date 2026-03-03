@@ -160,7 +160,7 @@ def get_free_manager_for_direction(direction: str):
         l_on = execute_query("SELECT value FROM settings WHERE key = 'leads_enabled'", fetchone=True)
         if l_on is not None and str(l_on[0]).strip() == '0':
             return None
-        role_cond = "(LOWER(role)='manager' AND (sphere='biz' OR sphere IS NULL)) OR (LOWER(role)='admin' AND (sphere='biz' OR sphere IS NULL) AND COALESCE(can_receive_leads,0)=1)"
+        role_cond = "(LOWER(role)='manager' AND (sphere='biz' OR sphere IS NULL OR TRIM(COALESCE(sphere,''))='')) OR (LOWER(role)='admin' AND (sphere='biz' OR sphere IS NULL OR TRIM(COALESCE(sphere,''))='') AND COALESCE(can_receive_leads,0)=1)"
         lead_cond = "(direction = 'biz' OR direction IS NULL)"
     row = execute_query(
         f"""SELECT u.user_id FROM users u
@@ -2182,7 +2182,7 @@ async def distribute_leads_now(m: types.Message):
     n = await distribute_pending_biz_leads()
     pending_after = execute_query(f"SELECT COUNT(*) FROM leads WHERE status = 'pending' AND {cond}", (), fetchone=True)[0] or 0
     total_biz_mgrs = execute_query(
-        "SELECT COUNT(*) FROM users u WHERE (LOWER(u.role)='manager' AND (u.sphere='biz' OR u.sphere IS NULL)) OR (LOWER(u.role)='admin' AND (u.sphere='biz' OR u.sphere IS NULL) AND COALESCE(u.can_receive_leads,0)=1)",
+        "SELECT COUNT(*) FROM users u WHERE (LOWER(u.role)='manager' AND (u.sphere='biz' OR u.sphere IS NULL OR TRIM(COALESCE(u.sphere,''))='')) OR (LOWER(u.role)='admin' AND (u.sphere='biz' OR u.sphere IS NULL OR TRIM(COALESCE(u.sphere,''))='') AND COALESCE(u.can_receive_leads,0)=1)",
         (),
         fetchone=True,
     )[0] or 0
@@ -2934,10 +2934,51 @@ async def fix_biz_busy(m: types.Message):
         return
     cond = "(direction = 'biz' OR direction IS NULL)"
     execute_query(
-        """UPDATE users SET is_busy = 0 WHERE (LOWER(role)='manager' AND (sphere='biz' OR sphere IS NULL)) OR (LOWER(role)='admin' AND (sphere='biz' OR sphere IS NULL) AND COALESCE(can_receive_leads,0)=1)
+        """UPDATE users SET is_busy = 0 WHERE (LOWER(role)='manager' AND (sphere='biz' OR sphere IS NULL OR TRIM(COALESCE(sphere,''))='')) OR (LOWER(role)='admin' AND (sphere='biz' OR sphere IS NULL OR TRIM(COALESCE(sphere,''))='') AND COALESCE(can_receive_leads,0)=1)
            AND NOT EXISTS (SELECT 1 FROM leads l WHERE l.manager_id = users.user_id AND l.status IN ('active', 'chatting') AND (l.direction = 'biz' OR l.direction IS NULL))"""
     )
     await m.answer("✅ Сброшен is_busy у менеджеров бизнеса без активных лидов. Нажми «📋 Распределить лиды» — лиды из очереди раздадутся.")
+
+@dp.message(Command("debug_biz"))
+async def debug_biz(m: types.Message):
+    """Владелец: кто из менеджеров бизнеса и сколько у них лидов в работе (active/chatting)."""
+    if not is_owner(m.from_user.id):
+        return
+    mgrs = execute_query(
+        "SELECT u.user_id, u.fio, u.sphere FROM users u WHERE (LOWER(u.role)='manager' AND (u.sphere='biz' OR u.sphere IS NULL OR TRIM(COALESCE(u.sphere,''))='')) OR (LOWER(u.role)='admin' AND (u.sphere='biz' OR u.sphere IS NULL OR TRIM(COALESCE(u.sphere,''))='') AND COALESCE(u.can_receive_leads,0)=1)",
+        (),
+        fetchall=True,
+    )
+    lead_cond = "(direction = 'biz' OR direction IS NULL)"
+    lines = ["🔍 <b>DEBUG: Бизнес</b>\n"]
+    if not mgrs:
+        lines.append("❌ Менеджеров бизнеса в базе нет.")
+        await m.answer("\n".join(lines), parse_mode="HTML")
+        return
+    for uid, fio, sph in mgrs:
+        cnt = execute_query(
+            f"SELECT COUNT(*) FROM leads WHERE manager_id = ? AND status IN ('active', 'chatting') AND {lead_cond}",
+            (uid,),
+            fetchone=True,
+        )[0] or 0
+        st = "🟢 свободен" if cnt == 0 else f"🔴 в работе: {cnt}"
+        lines.append(f"• {fio or uid} (sphere={sph!r}) — {st}")
+    pending = execute_query(f"SELECT COUNT(*) FROM leads WHERE status = 'pending' AND {lead_cond}", (), fetchone=True)[0] or 0
+    lines.append(f"\n📥 В очереди: {pending}")
+    free = get_free_manager_for_direction('biz')
+    lines.append(f"\nСвободный для раздачи: {'да (id=' + str(free) + ')' if free else 'нет'}")
+    await m.answer("\n".join(lines), parse_mode="HTML")
+
+@dp.message(Command("biz_back_to_queue"))
+async def biz_back_to_queue(m: types.Message):
+    """Владелец: всех лидов бизнеса со статусом active/chatting перевести в очередь (pending, без менеджера). Менеджеры станут свободны, потом нажми «Распределить лиды»."""
+    if not is_owner(m.from_user.id):
+        return
+    execute_query(
+        "UPDATE leads SET status = 'pending', manager_id = NULL WHERE (direction = 'biz' OR direction IS NULL) AND status IN ('active', 'chatting')"
+    )
+    execute_query("UPDATE users SET is_busy = 0")
+    await m.answer("✅ Все лиды бизнеса «в работе» переведены в очередь. Менеджеры свободны. Нажми «📋 Распределить лиды» — раздадутся из очереди.")
 
 @dp.message(Command("clear_db"))
 async def clear_db(m: types.Message):
