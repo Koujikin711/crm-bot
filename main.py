@@ -604,6 +604,7 @@ async def _process_wa_instance(instance_name, base_url, instance_id, token):
     send_msg_url = f"{base_url}/waInstance{instance_id}/sendMessage/{token}"
     chat_prefix = ""
     med_log_interval = 0  # счётчик для периодического лога "MED: polling"
+    biz_log_interval = 0  # счётчик для периодического лога "BIZ: polling"
     while True:
         try:
             processed_this_cycle = 0
@@ -631,16 +632,26 @@ async def _process_wa_instance(instance_name, base_url, instance_id, token):
                             print(f"[CRM] MED: опрос пустой (инстанс {instance_id}), ждём сообщений...")
                         break
                 else:
-                    if status != 200 or not j:
+                    biz_log_interval += 1
+                    if status != 200:
+                        try:
+                            err_body = text[:500] if text else ""
+                        except Exception:
+                            err_body = ""
+                        logging.warning("BIZ: receiveNotification вернул HTTP %s — %s", status, err_body)
+                        print(f"[CRM] BIZ: HTTP {status} — {err_body}")
+                        break
+                    if not j:
+                        if biz_log_interval % 30 == 1:
+                            print(f"[CRM] BIZ: опрос пустой (инстанс {instance_id}), ждём сообщений...")
                         break
                 d = j
                 rid = d.get('receiptId')
                 body = d.get('body', {})
                 tw = body.get('typeWebhook')
                 if tw not in ('incomingMessageReceived', 'incomingFileMessageReceived'):
-                    if instance_name == 'med':
-                        logging.info("MED: тип события %s (пропускаем)", tw)
-                        print(f"[CRM] MED: typeWebhook={tw!r} — пропуск")
+                    logging.info("%s: тип события %s (пропускаем)", instance_name.upper(), tw)
+                    print(f"[CRM] {instance_name.upper()}: typeWebhook={tw!r} — пропуск")
                     if rid:
                         await _wa_delete(f"{base_url}/waInstance{instance_id}/deleteNotification/{token}/{rid}")
                     continue
@@ -650,29 +661,36 @@ async def _process_wa_instance(instance_name, base_url, instance_id, token):
                     if rid:
                         await _wa_delete(f"{base_url}/waInstance{instance_id}/deleteNotification/{token}/{rid}")
                     continue
-                if instance_name == 'med':
-                    logging.info("MED: получено сообщение от %s (typeWebhook=%s)", phone, tw)
-                    print(f"[CRM] MED: получено сообщение от {phone}")
+                logging.info("%s: получено сообщение от %s (typeWebhook=%s)", instance_name.upper(), phone, tw)
+                print(f"[CRM] {instance_name.upper()}: получено сообщение от {phone}")
                 chat_id = f"{phone}@c.us"
                 exist = execute_query("SELECT manager_id, name, status, direction FROM leads WHERE phone = ?", (phone,), fetchone=True)
                 if exist:
                     mgr_id, c_name, status = exist[0], exist[1], exist[2]
                     lead_dir = (exist[3] or 'biz') if len(exist) > 3 else 'biz'
                     if lead_dir != instance_name:
-                        if instance_name == 'med':
-                            logging.info("MED: сообщение от %s проигнорировано (лид в базе как direction=%s)", phone, lead_dir)
-                            print(f"[CRM] MED: сообщение от {phone} проигнорировано (лид уже в базе как {lead_dir})")
+                        logging.info("%s: сообщение от %s проигнорировано (лид в базе как direction=%s)", instance_name.upper(), phone, lead_dir)
+                        print(f"[CRM] {instance_name.upper()}: сообщение от {phone} проигнорировано (лид уже в базе как {lead_dir})")
                         await _wa_delete(delete_url + "/" + str(rid))
                         continue
                     execute_query("UPDATE leads SET last_touch = ? WHERE phone = ?", (datetime.now().strftime("%Y-%m-%d %H:%M"), phone))
                     is_active = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (mgr_id,), fetchone=True)
-                    if not is_active or (instance_name == 'med' and is_active[1] != 'med'):
-                        # Лиды НЕ идут владельцу: ставим в очередь (pending), сообщение никому не пересылаем.
-                        execute_query("UPDATE leads SET manager_id = NULL, status = 'pending' WHERE phone = ?", (phone,))
-                        execute_query("DELETE FROM chat_sessions WHERE user_id = ? AND phone = ?", (mgr_id, phone))
-                        await _wa_delete(delete_url + "/" + str(rid))
-                        processed_this_cycle += 1
-                        continue
+                    if not is_active or is_active[1] != instance_name:
+                        # Менеджера нет или сфера не та — пробуем назначить свободного
+                        if mgr_id:
+                            execute_query("DELETE FROM chat_sessions WHERE user_id = ? AND phone = ?", (mgr_id, phone))
+                        target = get_free_manager_for_direction(instance_name)
+                        if target:
+                            execute_query("UPDATE users SET is_busy=1 WHERE user_id=?", (target,))
+                            execute_query("UPDATE leads SET manager_id = ?, status = 'active' WHERE phone = ?", (target, phone))
+                            mgr_id = target
+                            logging.info("%s: лид %s переназначен свободному менеджеру %s", instance_name.upper(), phone, target)
+                            print(f"[CRM] {instance_name.upper()}: лид {phone} переназначен менеджеру {target}")
+                        else:
+                            execute_query("UPDATE leads SET manager_id = NULL, status = 'pending' WHERE phone = ?", (phone,))
+                            await _wa_delete(delete_url + "/" + str(rid))
+                            processed_this_cycle += 1
+                            continue
                     # Если менеджер сейчас в диалоге с ДРУГИМ клиентом — этот лид не перебиваем: в очередь, сообщение не пересылаем.
                     session = execute_query("SELECT phone FROM chat_sessions WHERE user_id = ?", (mgr_id,), fetchone=True)
                     if session and session[0] != phone:
@@ -751,48 +769,19 @@ async def _process_wa_instance(instance_name, base_url, instance_id, token):
                         log_lead_event(phone, "incoming", txt[:200])
                         await bot.send_message(mgr_id, f"💬 <b>{c_name}</b> ({phone}):\n{txt}", reply_markup=kb, parse_mode="HTML")
                 else:
-                    # Нет лида в базе — новый контакт
+                    # Нет лида в базе — новый контакт (логика одинакова для медицины и бизнеса)
                     q = execute_query("SELECT step, instance_sphere FROM auth_queue WHERE phone = ?", (phone,), fetchone=True)
-                    if instance_name == 'biz':
-                        # Бизнес: лид создаётся сразу при первом сообщении (без ожидания ФИО)
-                        c_name = _extract_wa_text(body)
-                        if c_name == '[Файл/голос]' or not c_name or c_name == '...':
-                            c_name = 'Клиент'
-                        msg = "Салом, мо дар муддати кутоҳтарин ба шумо ҷавоб медиҳем!"
-                        await _wa_post(send_msg_url, {"chatId": chat_id, "message": msg})
-                        target = get_free_manager_for_direction(instance_name)
-                        if target:
-                            now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            execute_query("UPDATE users SET is_busy=1 WHERE user_id=?", (target,))
-                            execute_query(
-                                "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at, source) VALUES (?, ?, 'active', ?, ?, 1, ?, ?, 'WhatsApp')",
-                                (phone, c_name, target, now_iso, instance_name, now_iso),
-                            )
-                            kb = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone[:30]}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone[:30]}").adjust(2).as_markup()
-                            logging.info("biz: new lead %s -> manager %s (first message)", phone, target)
-                            try:
-                                await bot.send_message(target, f"📥 <b>НОВЫЙ ЛИД</b>\n👤 {c_name}\n📞 {phone}", reply_markup=kb, parse_mode="HTML")
-                            except Exception as e:
-                                logging.exception("send_message to manager %s failed: %s", target, e)
-                        else:
-                            now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            execute_query(
-                                "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at, source) VALUES (?, ?, 'pending', NULL, ?, 1, ?, ?, 'WhatsApp')",
-                                (phone, c_name, now_iso, instance_name, now_iso),
-                            )
-                            logging.warning("biz: all busy, lead %s in queue (first message)", phone)
-                    elif not q:
-                        # Медицина: первый контакт — просим имя
-                        logging.info("MED: первый контакт с %s, просим имя", phone)
-                        print(f"[CRM] MED: первый контакт с {phone}, просим имя")
+                    if not q:
+                        # Первый контакт — просим имя (med и biz)
+                        logging.info("%s: первый контакт с %s, просим имя", instance_name.upper(), phone)
+                        print(f"[CRM] {instance_name.upper()}: первый контакт с {phone}, просим имя")
                         msg = "Салом, ном ва насаби худро нависед! Мо дар муддати кутоҳтарин ба шумо ҷавоб медиҳем!"
                         await _wa_post(send_msg_url, {"chatId": chat_id, "message": msg})
                         execute_query("INSERT OR REPLACE INTO auth_queue (phone, step, instance_sphere) VALUES (?, 1, ?)", (phone, instance_name))
                     elif q[0] == 1 and (q[1] or instance_name) == instance_name:
-                        # Медицина: второе сообщение (имя) — создаём лид
-                        if instance_name == 'med':
-                            logging.info("MED: второе сообщение (имя) от %s, создаём лид", phone)
-                            print(f"[CRM] MED: второе сообщение (имя) от {phone}, создаём лид")
+                        # Второе сообщение (имя) — создаём лид (med и biz)
+                        logging.info("%s: второе сообщение (имя) от %s, создаём лид", instance_name.upper(), phone)
+                        print(f"[CRM] {instance_name.upper()}: второе сообщение (имя) от {phone}, создаём лид")
                         c_name = _extract_wa_text(body)
                         if c_name == '[Файл/голос]':
                             c_name = 'Клиент'
@@ -990,12 +979,12 @@ async def cmd_reset_user(m: types.Message):
     execute_query("DELETE FROM pending_reg WHERE user_id = ?", (uid,))
     await m.answer(f"✅ Пользователь {uid} удалён из базы. Он может заново написать боту /start и подать заявку.")
 
-@dp.callback_query(F.data.startswith("cl_") | F.data.startswith("f_"))
+@dp.callback_query(F.data.startswith("cl_") | F.data.startswith("f_s_") | F.data.startswith("f_t_") | F.data.startswith("f_r_") | F.data.startswith("f_n_"))
 async def closing(c: types.CallbackQuery, state: FSMContext):
     p = c.data.split("_")[-1]
     full_phone = get_lead_phone_by_prefix(p) or p
     phone_for_tel = "+" + "".join(c for c in str(full_phone) if c.isdigit())
-    if "cl_" in c.data:
+    if c.data.startswith("cl_"):
         direction = get_lead_direction(full_phone)
         if direction == 'med':
             kb = InlineKeyboardBuilder()
@@ -1015,7 +1004,8 @@ async def closing(c: types.CallbackQuery, state: FSMContext):
             kb.button(text="🚫 НЕ ОТВЕТИЛ", callback_data=f"f_n_{p}")
             kb.adjust(1)
             await c.message.answer("Итог звонка (нажмите «Набрать» — откроется набор номера в телефоне):", reply_markup=kb.as_markup())
-    elif "f_" in c.data:
+    else:
+        # f_s_, f_t_, f_r_, f_n_ — итоги по бизнесу
         res = c.data.split("_")[1]
         if res == 'n':
             l_data = execute_query("SELECT name FROM leads WHERE phone = ?", (full_phone,), fetchone=True)
@@ -1482,9 +1472,11 @@ async def lead_card_write(c: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data.startswith("call_"))
 async def lead_card_call(c: types.CallbackQuery):
-    phone = c.data[5:].strip()
+    prefix = c.data[5:].strip()
+    full_phone = get_lead_phone_by_prefix(prefix) or prefix
+    phone_for_tel = "+" + "".join(ch for ch in str(full_phone) if ch.isdigit())
     await c.answer()
-    await c.message.answer(f"📞 Позвонить: +{phone}")
+    await c.message.answer(f"📞 Позвонить: {phone_for_tel}")
 
 @dp.callback_query(F.data.startswith("hist_"))
 async def lead_card_history(c: types.CallbackQuery):
