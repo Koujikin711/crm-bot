@@ -361,7 +361,7 @@ def get_owner_biz_menu():
     kb.button(text="📋 Лиды в работе"); kb.button(text="💬 Начать диалог")
     kb.button(text="🔍 Поиск лида"); kb.button(text="📥 Поступления лидов")
     kb.button(text=l_btn)
-    kb.button(text="📋 Распределить лиды")
+    kb.button(text="📋 Распределить лиды"); kb.button(text="📥 Вернуть лиды в очередь")
     kb.button(text="📌 Доработать"); kb.button(text="👤 Назначить админа бизнеса"); kb.button(text="👑 Дать права владельца")
     kb.button(text="📂 Загрузка данных"); kb.button(text="⏱ Время в работе"); kb.button(text="🔥 Уволить"); kb.button(text="🎯 Поставить План")
     kb.button(text="◀ Назад")
@@ -2174,6 +2174,15 @@ async def distribute_leads_now(m: types.Message):
     if not is_owner(m.from_user.id):
         return
     cond = BIZ_LEAD_COND
+    # Если приём лидов выключен — свободных для раздачи нет
+    l_on = execute_query("SELECT value FROM settings WHERE key = 'leads_enabled'", fetchone=True)
+    if l_on is not None and str(l_on[0]).strip() == '0':
+        pending = execute_query(f"SELECT COUNT(*) FROM leads WHERE status = 'pending' AND {cond}", (), fetchone=True)[0] or 0
+        await m.answer(
+            f"🔴 Приём лидов выключен (ВЫКЛ ЛИДЫ). Включите кнопку «🟢 ВКЛ ЛИДЫ» — тогда «Распределить лиды» сможет раздать {pending} из очереди.",
+            reply_markup=get_main_menu(m.from_user.id),
+        )
+        return
     n = await distribute_pending_biz_leads()
     pending_after = execute_query(f"SELECT COUNT(*) FROM leads WHERE status = 'pending' AND {cond}", (), fetchone=True)[0] or 0
     total_biz_mgrs = execute_query(
@@ -2190,7 +2199,9 @@ async def distribute_leads_now(m: types.Message):
         )[0] or 0
         msg += f"\n\nСвободных менеджеров бизнеса нет (все {total_biz_mgrs} заняты). Когда менеджер закроет лид — ему автоматически выдастся следующий из очереди."
         if in_progress > 0:
-            msg += f"\n\nДиагностика: лидов «в работе» (бизнес): {in_progress} — они занимают менеджеров. Используйте /biz_back_to_queue, чтобы вернуть их в очередь."
+            msg += f"\n\nДиагностика: лидов «в работе» (бизнес): {in_progress} — они занимают менеджеров. Нажми «📥 Вернуть лиды в очередь», затем «📋 Распределить лиды»."
+        else:
+            msg += "\n\nПроверьте: включён ли приём лидов (🟢 ВКЛ ЛИДЫ) и есть ли менеджеры со сферой «Бизнес»."
     await m.answer(msg, reply_markup=get_main_menu(m.from_user.id))
 
 @dp.message(F.text == "📋 Лиды в работе")
@@ -2973,14 +2984,41 @@ async def debug_biz(m: types.Message):
 
 @dp.message(Command("biz_back_to_queue"))
 async def biz_back_to_queue(m: types.Message):
-    """Владелец: всех лидов бизнеса со статусом active/chatting перевести в очередь (pending, без менеджера). Менеджеры станут свободны, потом нажми «Распределить лиды»."""
+    """Владелец: всех лидов бизнеса со статусом active/chatting перевести в очередь (pending, без менеджера). Менеджеры станут свободны."""
     if not is_owner(m.from_user.id):
         return
+    count = execute_query(
+        f"SELECT COUNT(*) FROM leads WHERE {BIZ_LEAD_COND} AND status IN ('active', 'chatting')",
+        (),
+        fetchone=True,
+    )[0] or 0
     execute_query(
         f"UPDATE leads SET status = 'pending', manager_id = NULL WHERE {BIZ_LEAD_COND} AND status IN ('active', 'chatting')"
     )
     execute_query("UPDATE users SET is_busy = 0")
-    await m.answer("✅ Все лиды бизнеса «в работе» переведены в очередь. Менеджеры свободны. Нажми «📋 Распределить лиды» — раздадутся из очереди.")
+    if count > 0:
+        await m.answer(f"✅ В очередь переведено лидов: {count}. Менеджеры свободны. Нажми «📋 Распределить лиды».")
+    else:
+        await m.answer("✅ Лидов «в работе» не было (0). Если «Распределить лиды» пишет «все заняты» — включите 🟢 ВКЛ ЛИДЫ и проверьте, что есть менеджеры со сферой Бизнес.")
+
+@dp.message(F.text == "📥 Вернуть лиды в очередь")
+async def biz_back_to_queue_btn(m: types.Message):
+    """Кнопка: то же, что /biz_back_to_queue."""
+    if not is_owner(m.from_user.id):
+        return
+    count = execute_query(
+        f"SELECT COUNT(*) FROM leads WHERE {BIZ_LEAD_COND} AND status IN ('active', 'chatting')",
+        (),
+        fetchone=True,
+    )[0] or 0
+    execute_query(
+        f"UPDATE leads SET status = 'pending', manager_id = NULL WHERE {BIZ_LEAD_COND} AND status IN ('active', 'chatting')"
+    )
+    execute_query("UPDATE users SET is_busy = 0")
+    if count > 0:
+        await m.answer(f"✅ В очередь переведено лидов: {count}. Менеджеры свободны. Нажми «📋 Распределить лиды».")
+    else:
+        await m.answer("✅ Лидов «в работе» не было (0). Если «Распределить лиды» пишет «все заняты» — включите 🟢 ВКЛ ЛИДЫ и проверьте менеджеров со сферой Бизнес.")
 
 @dp.message(Command("clear_db"))
 async def clear_db(m: types.Message):
