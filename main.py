@@ -110,8 +110,13 @@ async def try_assign_queued_lead_to_manager(manager_id: int, direction: str):
     if not row:
         logging.info("[CRM] try_assign: нет лидов в очереди (direction=%s), менеджер %s", direction, manager_id)
         return
-    phone, name = row[0], row[1] or phone
-    execute_query("UPDATE leads SET manager_id = ?, status = 'active' WHERE phone = ?", (manager_id, phone))
+    phone, name = row[0], row[1] or row[0]
+    # Атомарно занять лид: только если он всё ещё pending (иначе другой менеджер уже взял)
+    execute_query("UPDATE leads SET manager_id = ?, status = 'active' WHERE phone = ? AND status = 'pending'", (manager_id, phone))
+    check = execute_query("SELECT manager_id FROM leads WHERE phone = ?", (phone,), fetchone=True)
+    if not check or check[0] != manager_id:
+        logging.info("[CRM] try_assign: лид %s уже взят другим менеджером, пропуск для %s", phone, manager_id)
+        return
     execute_query("UPDATE users SET is_busy = 1 WHERE user_id = ?", (manager_id,))
     kb = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone[:30]}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone[:30]}").adjust(2).as_markup()
     try:
@@ -163,7 +168,7 @@ def get_free_manager_for_direction(direction: str):
         l_on = execute_query("SELECT value FROM settings WHERE key = 'leads_enabled'", fetchone=True)
         if l_on is not None and str(l_on[0]).strip() == '0':
             return None
-        role_cond = "(LOWER(role)='manager' AND (sphere='biz' OR sphere IS NULL OR TRIM(COALESCE(sphere,''))='')) OR (LOWER(role)='admin' AND (sphere='biz' OR sphere IS NULL OR TRIM(COALESCE(sphere,''))='') AND COALESCE(can_receive_leads,0)=1)"
+        role_cond = "(LOWER(u.role)='manager' AND (u.sphere='biz' OR u.sphere IS NULL OR TRIM(COALESCE(u.sphere,''))='') AND COALESCE(u.can_receive_leads,1)=1) OR (LOWER(u.role)='admin' AND (u.sphere='biz' OR u.sphere IS NULL OR TRIM(COALESCE(u.sphere,''))='') AND COALESCE(u.can_receive_leads,0)=1)"
         lead_cond = BIZ_LEAD_COND
     row = execute_query(
         f"""SELECT u.user_id FROM users u
@@ -202,6 +207,8 @@ class Form(StatesGroup):
     med_income_period = State()
     # Бизнес: поступления лидов (кастомная дата/период)
     biz_leads_custom_period = State()
+    # Админ бизнеса: статистика за период (диапазон дат)
+    admin_biz_stats_custom = State()
     # Медицина: поступления лидов (кастомная дата/период)
     med_leads_custom_period = State()
     # Медицина: завершение диалога -> Оплатил -> выбор пакета и суммы
@@ -331,13 +338,12 @@ def get_main_menu(uid):
         kb.button(text="👥 Мои Пациенты"); kb.button(text="📋 Мои записи"); kb.button(text="💰 Мои оплаты"); kb.button(text="⏳ Дожим"); kb.button(text="📌 Доработать")
         kb.adjust(2)
         return kb.as_markup(resize_keyboard=True)
-    # Бизнес: admin или manager
+    # Бизнес: admin — свои кнопки
     if role == 'admin' and (sphere == 'biz' or sphere is None):
-        personal = "📥 Мои лиды: ВКЛ" if can_leads else "📥 Мои лиды: ВЫКЛ"
         kb.button(text="📈 Статистика"); kb.button(text="👤 KPI Менеджеров")
+        kb.button(text="🎯 Назначить План"); kb.button(text="📥 ВКЛ/ВЫКЛ лидов")
         kb.button(text="📋 Лиды в работе"); kb.button(text="💬 Начать диалог")
-        kb.button(text="🔍 Поиск лида"); kb.button(text="📌 Доработать"); kb.button(text="📥 Поступления лидов")
-        kb.button(text=personal)
+        kb.button(text="🔍 Поиск лида"); kb.button(text="📌 Доработать")
     elif role == 'manager' and (sphere == 'biz' or sphere is None):
         kb.button(text="👥 Мои клиенты"); kb.button(text="⏳ Дожим"); kb.button(text="✅ Оплачено"); kb.button(text="❌ Отказ"); kb.button(text="📌 Доработать")
     kb.adjust(2)
@@ -1050,12 +1056,48 @@ async def back_main(m: types.Message, state: FSMContext):
     await state.clear()
     await m.answer("Главное меню", reply_markup=get_main_menu(m.from_user.id))
 
-# --- Бизнес: статистика (только для владельца/админа в контексте бизнеса) ---
+# --- Бизнес: статистика (владелец — общая воронка; админ — за период) ---
 def _biz_leads_cond():
     return " " + BIZ_LEAD_COND + " "
 
+def _biz_stats_for_period(start_dt, end_dt):
+    """Вернуть (total, answered, sold) за период по created_at для бизнес-лидов."""
+    cond = _biz_leads_cond()
+    start_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+    end_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")
+    total = execute_query(
+        f"SELECT COUNT(*) FROM leads WHERE {cond.strip()} AND created_at BETWEEN ? AND ?",
+        (start_str, end_str),
+        fetchone=True,
+    )[0] or 0
+    answered = execute_query(
+        f"SELECT COUNT(*) FROM leads WHERE {cond.strip()} AND is_answered = 1 AND created_at BETWEEN ? AND ?",
+        (start_str, end_str),
+        fetchone=True,
+    )[0] or 0
+    sold = execute_query(
+        f"SELECT COUNT(*) FROM leads WHERE {cond.strip()} AND status = 'closed' AND is_answered = 1 AND (comment IS NULL OR comment NOT LIKE '%Автозакрытие%') AND created_at BETWEEN ? AND ?",
+        (start_str, end_str),
+        fetchone=True,
+    )[0] or 0
+    return total, answered, sold
+
 @dp.message(F.text == "📈 Статистика")
-async def stats(m: types.Message):
+async def stats(m: types.Message, state: FSMContext):
+    u = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (m.from_user.id,), fetchone=True)
+    if not u:
+        return
+    role, sphere = u[0], u[1]
+    # Админ бизнеса: сначала выбор периода
+    if role == 'admin' and (sphere == 'biz' or sphere is None):
+        kb = InlineKeyboardBuilder()
+        kb.button(text="Сегодня", callback_data="admstat_today")
+        kb.button(text="Вчера", callback_data="admstat_yesterday")
+        kb.button(text="Другая дата (диапазон)", callback_data="admstat_custom")
+        kb.adjust(1)
+        await m.answer("За какой период показать статистику?", reply_markup=kb.as_markup())
+        return
+    # Владелец или общая: воронка без периода
     await chat_history_delete_messages(m.from_user.id, context="kpi")
     cond = _biz_leads_cond()
     all_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE 1=1 AND {cond.strip()}", fetchone=True)[0] or 1
@@ -1065,6 +1107,81 @@ async def stats(m: types.Message):
     c_sale = round((sold_l / (ans_l or 1)) * 100, 1)
     msg = await m.answer(f"📊 <b>ОБЩАЯ ВОРОНКА (Бизнес)</b>\n\n📥 Лидов: {all_l}\n📞 Дозвоны: {ans_l} ({c_ans}%)\n💰 Продажи: {sold_l} ({c_sale}% из дозвонов)", parse_mode="HTML")
     chat_history_add(m.from_user.id, msg.message_id, context="stats")
+
+@dp.callback_query(F.data.startswith("admstat_"))
+async def admin_biz_stats_cb(c: types.CallbackQuery, state: FSMContext):
+    u = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (c.from_user.id,), fetchone=True)
+    if not u or u[0] != 'admin' or (u[1] != 'biz' and u[1] is not None):
+        await c.answer()
+        return
+    period = c.data.replace("admstat_", "")
+    now = datetime.now()
+    if period == "custom":
+        await state.set_state(Form.admin_biz_stats_custom)
+        await c.message.edit_text("Введите диапазон дат:\nПример: 2026-02-01 2026-02-26")
+        await c.answer()
+        return
+    if period == "today":
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = now
+        label = "сегодня"
+    else:
+        start = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1) - timedelta(seconds=1)
+        label = "вчера"
+    total, answered, sold = _biz_stats_for_period(start, end)
+    not_answered = total - answered
+    conv_contact = round((answered / (total or 1)) * 100, 1)
+    conv_sale = round((sold / (answered or 1)) * 100, 1)
+    text = (
+        f"📊 <b>Статистика (Бизнес) — {label}</b>\n\n"
+        f"📥 Поступление лидов: {total}\n"
+        f"❌ Не ответивших: {not_answered}\n"
+        f"📞 Конверсия на дозвон: {conv_contact}% ({answered} из {total})\n"
+        f"💰 Продажи: {sold}\n"
+        f"📈 Конверсия в продажу (из дозвонов): {conv_sale}%"
+    )
+    await c.message.edit_text(text, parse_mode="HTML")
+    await c.answer()
+
+@dp.message(Form.admin_biz_stats_custom)
+async def admin_biz_stats_custom_done(m: types.Message, state: FSMContext):
+    u = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (m.from_user.id,), fetchone=True)
+    if not u or u[0] != 'admin' or (u[1] != 'biz' and u[1] is not None):
+        await state.clear()
+        return
+    parts = m.text.strip().split()
+    try:
+        if len(parts) == 1:
+            d1 = datetime.strptime(parts[0], "%Y-%m-%d").date()
+            d2 = d1
+        elif len(parts) == 2:
+            d1 = datetime.strptime(parts[0], "%Y-%m-%d").date()
+            d2 = datetime.strptime(parts[1], "%Y-%m-%d").date()
+        else:
+            raise ValueError()
+        if d1 > d2:
+            d1, d2 = d2, d1
+        start = datetime.combine(d1, datetime.min.time())
+        end = datetime.combine(d2, datetime.max.time())
+    except ValueError:
+        await m.answer("Неверный формат. Пример:\n2026-02-24\nили\n2026-02-01 2026-02-26")
+        return
+    total, answered, sold = _biz_stats_for_period(start, end)
+    not_answered = total - answered
+    conv_contact = round((answered / (total or 1)) * 100, 1)
+    conv_sale = round((sold / (answered or 1)) * 100, 1)
+    label = f"{d1} — {d2}" if d1 != d2 else str(d1)
+    text = (
+        f"📊 <b>Статистика (Бизнес) — {label}</b>\n\n"
+        f"📥 Поступление лидов: {total}\n"
+        f"❌ Не ответивших: {not_answered}\n"
+        f"📞 Конверсия на дозвон: {conv_contact}% ({answered} из {total})\n"
+        f"💰 Продажи: {sold}\n"
+        f"📈 Конверсия в продажу (из дозвонов): {conv_sale}%"
+    )
+    await m.answer(text, parse_mode="HTML")
+    await state.clear()
 
 @dp.message(F.text == "👤 KPI Менеджеров")
 async def mgr_kpi(m: types.Message):
@@ -2083,7 +2200,9 @@ async def cl_fin(m: types.Message, state: FSMContext):
 @dp.message(F.text == "🎯 Поставить План")
 async def p_list(m: types.Message, state: FSMContext):
     data = await state.get_data()
-    sphere = data.get("owner_current_sphere")  # med | biz — из меню владельца
+    sphere = data.get("owner_current_sphere")
+    if not is_owner(m.from_user.id):
+        sphere = None
     if sphere == "med":
         st = execute_query("SELECT user_id, fio, sphere FROM users WHERE role='manager' AND sphere='med'", fetchall=True)
     else:
@@ -2097,6 +2216,79 @@ async def p_list(m: types.Message, state: FSMContext):
         sph = (row[2] or 'биз') if len(row) > 2 else 'биз'
         kb.button(text=f"🎯 {fio} ({sph})", callback_data=f"sp_{sid}")
     await m.answer("Кому план?", reply_markup=kb.adjust(1).as_markup())
+
+@dp.message(F.text == "🎯 Назначить План")
+async def admin_plan_list(m: types.Message, state: FSMContext):
+    """Админ бизнеса: выбор менеджера и установка плана продаж."""
+    u = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (m.from_user.id,), fetchone=True)
+    if not u or u[0] != 'admin' or (u[1] != 'biz' and u[1] is not None):
+        return
+    st = execute_query("SELECT user_id, fio, sphere FROM users WHERE role='manager' AND (sphere='biz' OR sphere IS NULL)", fetchall=True)
+    if not st:
+        await m.answer("Нет менеджеров бизнеса.")
+        return
+    kb = InlineKeyboardBuilder()
+    for row in st:
+        sid, fio = row[0], row[1]
+        kb.button(text=f"🎯 {fio}", callback_data=f"sp_{sid}")
+    await m.answer("Кому назначить план продаж?", reply_markup=kb.adjust(1).as_markup())
+
+@dp.message(F.text == "📥 ВКЛ/ВЫКЛ лидов")
+async def admin_leads_toggle_list(m: types.Message):
+    """Админ бизнеса: список менеджеров с переключателем приёма лидов."""
+    u = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (m.from_user.id,), fetchone=True)
+    if not u or u[0] != 'admin' or (u[1] != 'biz' and u[1] is not None):
+        return
+    rows = execute_query(
+        "SELECT user_id, fio, COALESCE(can_receive_leads, 1) FROM users WHERE role = 'manager' AND (sphere = 'biz' OR sphere IS NULL OR TRIM(COALESCE(sphere,'')) = '') ORDER BY fio",
+        fetchall=True,
+    )
+    if not rows:
+        await m.answer("Нет менеджеров бизнеса.")
+        return
+    kb = InlineKeyboardBuilder()
+    for uid, fio, on in rows:
+        label = fio or str(uid)
+        status = "🟢 ВКЛ" if on else "🔴 ВЫКЛ"
+        kb.button(text=f"{status} {label}", callback_data=f"lead_tgl_{uid}")
+    kb.adjust(1)
+    await m.answer("Нажмите на менеджера, чтобы включить или выключить приём лидов ему:", reply_markup=kb.as_markup())
+
+@dp.callback_query(F.data.startswith("lead_tgl_"))
+async def admin_leads_toggle_cb(c: types.CallbackQuery):
+    u = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (c.from_user.id,), fetchone=True)
+    if not u or u[0] != 'admin' or (u[1] != 'biz' and u[1] is not None):
+        await c.answer()
+        return
+    uid = c.data.replace("lead_tgl_", "").strip()
+    if not uid.isdigit():
+        await c.answer()
+        return
+    uid = int(uid)
+    row = execute_query("SELECT fio, COALESCE(can_receive_leads, 1) FROM users WHERE user_id = ? AND role = 'manager'", (uid,), fetchone=True)
+    if not row:
+        await c.answer("Менеджер не найден.")
+        return
+    fio, current = row[0], row[1]
+    new_val = 0 if current else 1
+    execute_query("UPDATE users SET can_receive_leads = ? WHERE user_id = ?", (new_val, uid))
+    status = "🟢 ВКЛ" if new_val else "🔴 ВЫКЛ"
+    await c.answer(f"{fio or uid}: лиды {status}")
+    # Обновить список
+    rows = execute_query(
+        "SELECT user_id, fio, COALESCE(can_receive_leads, 1) FROM users WHERE role = 'manager' AND (sphere = 'biz' OR sphere IS NULL OR TRIM(COALESCE(sphere,'')) = '') ORDER BY fio",
+        fetchall=True,
+    )
+    kb = InlineKeyboardBuilder()
+    for ruid, rfio, on in rows:
+        label = rfio or str(ruid)
+        st = "🟢 ВКЛ" if on else "🔴 ВЫКЛ"
+        kb.button(text=f"{st} {label}", callback_data=f"lead_tgl_{ruid}")
+    kb.adjust(1)
+    try:
+        await c.message.edit_reply_markup(reply_markup=kb.as_markup())
+    except Exception:
+        pass
 
 @dp.callback_query(F.data.startswith("sp_"))
 async def p_val(c: types.CallbackQuery, state: FSMContext):
