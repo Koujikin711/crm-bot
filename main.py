@@ -40,10 +40,18 @@ def _append_biz_lead_to_sheet(date_str, fio, phone, vid_biznesa, bol_klienta, ko
         import gspread
         from google.oauth2.service_account import Credentials
         creds_str = GOOGLE_CREDENTIALS_JSON.strip()
-        # Amvera не разрешает кавычки в переменных — можно передать JSON в Base64
-        if creds_str.startswith("eyJ"):
-            creds_str = base64.b64decode(creds_str).decode("utf-8")
-        info = json.loads(creds_str)
+        # Сначала пробуем как JSON; если обрывается (env режет кавычки) — пробуем Base64
+        try:
+            info = json.loads(creds_str)
+        except json.JSONDecodeError:
+            try:
+                decoded = base64.b64decode(creds_str).decode("utf-8")
+                info = json.loads(decoded)
+            except Exception:
+                raise ValueError(
+                    "GOOGLE_CREDENTIALS_JSON: невалидный JSON (часто из-за кавычек в переменной окружения). "
+                    "Передайте ключ в Base64: python to_base64_creds.py путь/к/ключу.json"
+                )
         scopes = ["https://www.googleapis.com/auth/spreadsheets"]
         creds = Credentials.from_service_account_info(info, scopes=scopes)
         gc = gspread.authorize(creds)
@@ -53,7 +61,7 @@ def _append_biz_lead_to_sheet(date_str, fio, phone, vid_biznesa, bol_klienta, ko
         wks.append_row(row, value_input_option="USER_ENTERED")
         logging.info("CRM: appended biz lead row to Google Sheet: %s", phone)
     except Exception as e:
-        logging.warning("CRM: Google Sheet append failed: %s", e)
+        logging.warning("CRM: Google Sheet append failed (check GOOGLE_SHEET_ID and service account access): %s", e)
 
 
 try:
@@ -971,6 +979,8 @@ async def job_chatting_idle():
                 fetchall=True,
             )
             for (uid, phone, _) in (rows or []):
+                if is_owner(uid):
+                    continue
                 try:
                     await bot.send_message(uid, "⚠️ Вы не отвечаете клиенту! Завершите диалог, если закончили.")
                     execute_query("UPDATE chat_sessions SET reminder_sent = 1 WHERE user_id = ? AND phone = ?", (uid, phone))
