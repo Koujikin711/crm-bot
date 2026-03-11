@@ -6,3 +6,5 @@ python-dotenv
 fastapi
 uvicorn[standard]
 telethon
+gspread
+google-auth

@@ -66,6 +66,7 @@ def init_db():
         "ALTER TABLE leads ADD COLUMN source TEXT",
         "ALTER TABLE leads ADD COLUMN closed_at TEXT",
         "ALTER TABLE leads ADD COLUMN stage_id INTEGER",
+        "ALTER TABLE leads ADD COLUMN is_sale INTEGER DEFAULT 0",
     ]:
         try:
             execute_query(sql)
@@ -79,6 +80,9 @@ def init_db():
     )
     execute_query(
         "CREATE TABLE IF NOT EXISTS funnel_stages (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, direction TEXT, sort_order INTEGER DEFAULT 0)"
+    )
+    execute_query(
+        "CREATE TABLE IF NOT EXISTS manager_extra_sales (manager_id INTEGER PRIMARY KEY, extra_sales INTEGER DEFAULT 0)"
     )
     try:
         execute_query(

@@ -21,11 +21,33 @@ from config import (
     DB_PATH, OWNER_ID, DOCTOR_LIMITS, CHATTING_IDLE_MINUTES,
     REMINDER_24H_HOURS, REMINDER_24H_WINDOW_HOURS,
     TELEGRAM_LEADS_PHONE, TELEGRAM_API_ID, TELEGRAM_API_HASH, TELEGRAM_SESSION_PATH,
+    GOOGLE_SHEET_ID, GOOGLE_SHEET_TAB_NAME, GOOGLE_CREDENTIALS_JSON,
 )
 from db import execute_query, init_db
 
 # Условие «лид бизнеса» в SQL (включая пустой direction)
 BIZ_LEAD_COND = "(direction = 'biz' OR direction IS NULL OR TRIM(COALESCE(direction,''))='')"
+
+
+def _append_biz_lead_to_sheet(date_str, fio, phone, vid_biznesa, bol_klienta, kommentariy, perezvon):
+    """Добавить строку в Google Sheet «База данных лидов». Вызывать из потока (sync)."""
+    if not GOOGLE_SHEET_ID or not GOOGLE_CREDENTIALS_JSON:
+        return
+    try:
+        import gspread
+        from google.oauth2.service_account import Credentials
+        info = json.loads(GOOGLE_CREDENTIALS_JSON)
+        scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+        creds = Credentials.from_service_account_info(info, scopes=scopes)
+        gc = gspread.authorize(creds)
+        sh = gc.open_by_key(GOOGLE_SHEET_ID)
+        wks = sh.worksheet(GOOGLE_SHEET_TAB_NAME)
+        row = [date_str, fio or "", phone or "", vid_biznesa or "", bol_klienta or "", kommentariy or "", perezvon or ""]
+        wks.append_row(row, value_input_option="USER_ENTERED")
+        logging.info("CRM: appended biz lead row to Google Sheet: %s", phone)
+    except Exception as e:
+        logging.warning("CRM: Google Sheet append failed: %s", e)
+
 
 try:
     import tg_leads_client as _tg_leads
@@ -190,7 +212,9 @@ dp = Dispatcher(storage=MemoryStorage())
 class Form(StatesGroup):
     waiting_for_reply = State()
     closing_sphere = State()
+    closing_pain = State()      # боль клиента (для записи в Google Sheet)
     closing_comment = State()
+    closing_callback = State()  # перезвон (для записи в Google Sheet)
     reg_fio = State()
     new_chat_phone = State()
     new_chat_media = State()
@@ -1083,7 +1107,7 @@ def _biz_stats_for_period(start_dt, end_dt):
         fetchone=True,
     )[0] or 0
     sold = execute_query(
-        f"SELECT COUNT(*) FROM leads WHERE {cond.strip()} AND status = 'closed' AND is_answered = 1 AND (comment IS NULL OR comment NOT LIKE '%Автозакрытие%') AND created_at BETWEEN ? AND ?",
+        f"SELECT COUNT(*) FROM leads WHERE {cond.strip()} AND status = 'closed' AND is_sale = 1 AND (comment IS NULL OR comment NOT LIKE '%Автозакрытие%') AND created_at BETWEEN ? AND ?",
         (start_str, end_str),
         fetchone=True,
     )[0] or 0
@@ -1139,7 +1163,7 @@ async def stats(m: types.Message, state: FSMContext):
     cond = _biz_leads_cond()
     all_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE 1=1 AND {cond.strip()}", fetchone=True)[0] or 1
     ans_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE is_answered=1 AND {cond.strip()}", fetchone=True)[0]
-    sold_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE status='closed' AND (comment IS NULL OR comment NOT LIKE '%Автозакрытие%') AND is_answered=1 AND {cond.strip()}", fetchone=True)[0]
+    sold_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE status='closed' AND (comment IS NULL OR comment NOT LIKE '%Автозакрытие%') AND is_sale=1 AND {cond.strip()}", fetchone=True)[0]
     c_ans = round((ans_l / all_l) * 100, 1)
     c_sale = round((sold_l / (ans_l or 1)) * 100, 1)
     msg = await m.answer(
@@ -1351,7 +1375,9 @@ async def mgr_kpi(m: types.Message):
             continue
         m_all = execute_query(f"SELECT COUNT(*) FROM leads WHERE manager_id=? AND {BIZ_LEAD_COND}", (mid,), fetchone=True)[0] or 1
         m_ans = execute_query(f"SELECT COUNT(*) FROM leads WHERE manager_id=? AND is_answered=1 AND {BIZ_LEAD_COND}", (mid,), fetchone=True)[0]
-        m_sold = execute_query(f"SELECT COUNT(*) FROM leads WHERE manager_id=? AND status='closed' AND is_answered=1 AND (comment IS NULL OR comment NOT LIKE '%Автозакрытие%') AND {BIZ_LEAD_COND}", (mid,), fetchone=True)[0]
+        m_sold = execute_query(f"SELECT COUNT(*) FROM leads WHERE manager_id=? AND status='closed' AND is_sale=1 AND (comment IS NULL OR comment NOT LIKE '%Автозакрытие%') AND {BIZ_LEAD_COND}", (mid,), fetchone=True)[0]
+        extra = execute_query("SELECT extra_sales FROM manager_extra_sales WHERE manager_id = ?", (mid,), fetchone=True)
+        m_sold += (extra[0] if extra else 0)
         m_t = execute_query(f"SELECT AVG(touches) FROM leads WHERE manager_id=? AND {BIZ_LEAD_COND}", (mid,), fetchone=True)[0] or 0
         perc = round((m_sold / (plan or 1)) * 100, 1)
         conv = round((m_ans / m_all) * 100, 1)
@@ -2337,21 +2363,48 @@ async def med_logoped_cb(c: types.CallbackQuery):
 
 @dp.message(Form.closing_sphere)
 async def cl_sph(m: types.Message, state: FSMContext):
-    await state.update_data(c_sphere=m.text); await state.set_state(Form.closing_comment); await m.answer("Комментарий:")
+    await state.update_data(c_sphere=m.text)
+    await state.set_state(Form.closing_pain)
+    await m.answer("Боль клиента:")
+
+@dp.message(Form.closing_pain)
+async def cl_pain(m: types.Message, state: FSMContext):
+    await state.update_data(c_pain=m.text)
+    await state.set_state(Form.closing_comment)
+    await m.answer("Комментарий:")
 
 @dp.message(Form.closing_comment)
+async def cl_comment(m: types.Message, state: FSMContext):
+    await state.update_data(c_comment=m.text)
+    await state.set_state(Form.closing_callback)
+    await m.answer("Перезвон (дата/время или «нет»):")
+
+@dp.message(Form.closing_callback)
 async def cl_fin(m: types.Message, state: FSMContext):
     d = await state.get_data()
+    perezvon = (m.text or "").strip()
     st = "thinking" if d['c_status'] == 't' else "closed"
     ans = 1 if d['c_status'] in ['s', 't', 'r'] else 0
+    c_phone = d['c_phone']
+    c_sphere = d.get('c_sphere') or ''
+    c_pain = d.get('c_pain') or ''
+    c_comment = d.get('c_comment') or ''
     if st == "closed":
         now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        execute_query("UPDATE leads SET status=?, sphere=?, comment=?, is_answered=?, closed_at=? WHERE phone=?", (st, d['c_sphere'], m.text, ans, now_iso, d['c_phone']))
-    else:
-        execute_query("UPDATE leads SET status=?, sphere=?, comment=?, is_answered=? WHERE phone=?", (st, d['c_sphere'], m.text, ans, d['c_phone']))
-    execute_query("DELETE FROM follow_up_queue WHERE phone = ?", (d['c_phone'],))
-    execute_query("DELETE FROM chat_sessions WHERE user_id = ? AND phone = ?", (m.from_user.id, d['c_phone']))
-    log_lead_event(d['c_phone'], "status_change", f"{st}: {m.text[:100]}", m.from_user.id)
+        is_sale = 1 if d['c_status'] == 's' else 0  # только «Оплатил» = продажа для плана/KPI
+        execute_query("UPDATE leads SET status=?, sphere=?, comment=?, is_answered=?, is_sale=?, closed_at=? WHERE phone=?", (st, c_sphere, c_comment, ans, is_sale, now_iso, c_phone))
+        # Запись в Google Sheet «База данных лидов» (Дата, ФИО, Номер, Вид бизнеса, Боль клиента, Комментарий, Перезвон)
+        lead_row = execute_query("SELECT name FROM leads WHERE phone = ?", (c_phone,), fetchone=True)
+        lead_name = (lead_row[0] if lead_row else None) or c_phone
+        date_str = datetime.now().strftime("%d.%m.%Y %H:%M")
+        try:
+            await asyncio.to_thread(_append_biz_lead_to_sheet, date_str, lead_name, c_phone, c_sphere, c_pain, c_comment, perezvon)
+        except Exception as e:
+            logging.warning("CRM: sheet append thread error: %s", e)
+        execute_query("UPDATE leads SET status=?, sphere=?, comment=?, is_answered=? WHERE phone=?", (st, c_sphere, c_comment, ans, c_phone))
+    execute_query("DELETE FROM follow_up_queue WHERE phone = ?", (c_phone,))
+    execute_query("DELETE FROM chat_sessions WHERE user_id = ? AND phone = ?", (m.from_user.id, c_phone))
+    log_lead_event(c_phone, "status_change", f"{st}: {c_comment[:100]}", m.from_user.id)
     execute_query("UPDATE users SET is_busy=0 WHERE user_id=?", (m.from_user.id,))
     outcome_mid = d.get("outcome_message_id")
     if outcome_mid:
@@ -2359,7 +2412,7 @@ async def cl_fin(m: types.Message, state: FSMContext):
             await bot.delete_message(chat_id=m.from_user.id, message_id=outcome_mid)
         except Exception:
             pass
-    text, kbd = build_lead_card(d['c_phone'])
+    text, kbd = build_lead_card(c_phone)
     await m.answer(text or "✅ Отчет принят!", reply_markup=kbd, parse_mode="HTML")
     await m.answer("Меню", reply_markup=get_main_menu(m.from_user.id))
     await state.clear()
@@ -2907,7 +2960,7 @@ async def time_in_work_report(m: types.Message):
     if not u or u[0] != 'owner':
         return
     lines = ["⏱ <b>Среднее время в работе</b> (от создания лида до закрытия):\n"]
-    for direction, cond in [("Бизнес", BIZ_LEAD_COND), ("Медицина", "direction = 'med'")]:
+    for direction, cond in [("Бизнес", BIZ_LEAD_COND + " AND is_sale = 1"), ("Медицина", "direction = 'med'")]:
         row = execute_query(
             f"SELECT AVG((julianday(closed_at) - julianday(created_at)) * 24) FROM leads WHERE status = 'closed' AND closed_at IS NOT NULL AND created_at IS NOT NULL AND {cond}",
             (), fetchone=True)
@@ -2916,7 +2969,7 @@ async def time_in_work_report(m: types.Message):
             lines.append(f"▪️ {direction}: {round(avg_h, 1)} ч")
         else:
             lines.append(f"▪️ {direction}: {round(avg_h / 24, 1)} дн")
-    cnt_biz = execute_query("SELECT COUNT(*) FROM leads WHERE status = 'closed' AND closed_at IS NOT NULL AND created_at IS NOT NULL AND " + BIZ_LEAD_COND, (), fetchone=True)[0] or 0
+    cnt_biz = execute_query("SELECT COUNT(*) FROM leads WHERE status = 'closed' AND closed_at IS NOT NULL AND created_at IS NOT NULL AND is_sale = 1 AND " + BIZ_LEAD_COND, (), fetchone=True)[0] or 0
     cnt_med = execute_query("SELECT COUNT(*) FROM leads WHERE status = 'closed' AND closed_at IS NOT NULL AND created_at IS NOT NULL AND direction = 'med'", (), fetchone=True)[0] or 0
     lines.append(f"\n(по {cnt_biz} и {cnt_med} закрытым лидам)")
     await m.answer("\n".join(lines), parse_mode="HTML")

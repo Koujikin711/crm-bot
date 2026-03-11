@@ -32,3 +32,9 @@ TELEGRAM_LEADS_PHONE = os.environ.get("TELEGRAM_LEADS_PHONE", "").strip()  # н�
 TELEGRAM_API_ID = os.environ.get("TELEGRAM_API_ID", "")
 TELEGRAM_API_HASH = os.environ.get("TELEGRAM_API_HASH", "")
 TELEGRAM_SESSION_PATH = os.environ.get("TELEGRAM_SESSION_PATH", os.path.join(os.path.dirname(os.path.abspath(__file__)), "tg_leads_session"))
+
+# Google Sheets — база лидов для SMS-рассылки (опционально)
+GOOGLE_SHEET_ID = os.environ.get("GOOGLE_SHEET_ID", "176UpFHBawww6QJroJFFkImNYSepaSsjyUtYXQJdsY7c").strip()
+GOOGLE_SHEET_TAB_NAME = os.environ.get("GOOGLE_SHEET_TAB_NAME", "База данных лидов")
+# JSON ключа сервисного аккаунта. Задай в .env или в переменных Amvera — иначе запись в таблицу отключена.
+GOOGLE_CREDENTIALS_JSON = os.environ.get("GOOGLE_CREDENTIALS_JSON", "").strip()
