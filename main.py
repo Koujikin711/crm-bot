@@ -39,19 +39,30 @@ def _append_biz_lead_to_sheet(date_str, fio, phone, vid_biznesa, bol_klienta, ko
         import base64
         import gspread
         from google.oauth2.service_account import Credentials
-        creds_str = GOOGLE_CREDENTIALS_JSON.strip()
-        # Сначала пробуем как JSON; если обрывается (env режет кавычки) — пробуем Base64
-        try:
-            info = json.loads(creds_str)
-        except json.JSONDecodeError:
+        creds_str = GOOGLE_CREDENTIALS_JSON.strip().strip('"').strip("'")
+        if not creds_str:
+            logging.warning("CRM: GOOGLE_CREDENTIALS_JSON пустой — запись в таблицу отключена.")
+            return
+        info = None
+        # Сначала Base64 (так обычно задают в переменных окружения)
+        if not creds_str.startswith("{"):
             try:
-                decoded = base64.b64decode(creds_str).decode("utf-8")
+                b64 = creds_str.replace("\n", "").replace(" ", "").replace("\r", "")
+                decoded = base64.b64decode(b64).decode("utf-8")
                 info = json.loads(decoded)
             except Exception:
-                raise ValueError(
-                    "GOOGLE_CREDENTIALS_JSON: невалидный JSON (часто из-за кавычек в переменной окружения). "
-                    "Передайте ключ в Base64: python to_base64_creds.py путь/к/ключу.json"
-                )
+                pass
+        if info is None:
+            try:
+                info = json.loads(creds_str)
+            except json.JSONDecodeError:
+                pass
+        if info is None:
+            logging.warning(
+                "CRM: GOOGLE_CREDENTIALS_JSON не распознан. Задайте ключ в Base64: "
+                "python to_base64_creds.py ключ.json → скопировать вывод в переменную (без кавычек)."
+            )
+            return
         scopes = ["https://www.googleapis.com/auth/spreadsheets"]
         creds = Credentials.from_service_account_info(info, scopes=scopes)
         gc = gspread.authorize(creds)
