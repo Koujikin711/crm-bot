@@ -1105,7 +1105,7 @@ def _med_stats_for_period(start_dt, end_dt):
         fetchone=True,
     )[0] or 0
     sold = execute_query(
-        f\"SELECT COUNT(*) FROM leads WHERE {cond} AND status = 'closed' AND is_answered = 1 AND (comment IS NULL OR comment NOT LIKE '%Автозакрытие%') AND created_at BETWEEN ? AND ?\",
+        f"SELECT COUNT(*) FROM leads WHERE {cond} AND status = 'closed' AND is_answered = 1 AND (comment IS NULL OR comment NOT LIKE '%Автозакрытие%') AND created_at BETWEEN ? AND ?",
         (start_str, end_str),
         fetchone=True,
     )[0] or 0
