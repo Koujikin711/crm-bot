@@ -27,6 +27,8 @@ from db import execute_query, init_db
 
 # Условие «лид бизнеса» в SQL (включая пустой direction)
 BIZ_LEAD_COND = "(direction = 'biz' OR direction IS NULL OR TRIM(COALESCE(direction,''))='')"
+# Тестовые лиды (phone LIKE 'TEST_%') не учитываются в статистике
+NOT_TEST_LEAD_COND = " AND (phone NOT LIKE 'TEST_%')"
 
 
 def _append_biz_lead_to_sheet(date_str, fio, phone, vid_biznesa, bol_klienta, kommentariy, perezvon):
@@ -121,6 +123,8 @@ async def safe_callback_answer(c: types.CallbackQuery, text: str = None):
 
 async def try_assign_queued_lead_to_manager(manager_id: int, direction: str):
     """После закрытия лида: если есть лид в очереди (status=pending), назначить его этому менеджеру. Для бизнеса — только если глобально лиды включены."""
+    if is_owner(manager_id):
+        return
     if direction != 'med':
         l_on = execute_query("SELECT value FROM settings WHERE key = 'leads_enabled'", fetchone=True)
         if l_on is not None and str(l_on[0]).strip() == '0':
@@ -1024,7 +1028,10 @@ async def cmd_reset_user(m: types.Message):
 
 @dp.callback_query(F.data.startswith("cl_") | F.data.startswith("f_s_") | F.data.startswith("f_t_") | F.data.startswith("f_r_") | F.data.startswith("f_n_"))
 async def closing(c: types.CallbackQuery, state: FSMContext):
-    p = c.data.split("_")[-1]
+    if c.data.startswith("cl_"):
+        p = c.data[3:].strip()
+    else:
+        p = c.data.split("_", 2)[-1].strip() if "_" in c.data else ""
     full_phone = get_lead_phone_by_prefix(p) or p
     phone_for_tel = "+" + "".join(c for c in str(full_phone) if c.isdigit())
     if c.data.startswith("cl_"):
@@ -1137,17 +1144,17 @@ def _biz_stats_for_period(start_dt, end_dt):
     start_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
     end_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")
     total = execute_query(
-        f"SELECT COUNT(*) FROM leads WHERE {cond.strip()} AND created_at BETWEEN ? AND ?",
+        f"SELECT COUNT(*) FROM leads WHERE {cond.strip()}{NOT_TEST_LEAD_COND} AND created_at BETWEEN ? AND ?",
         (start_str, end_str),
         fetchone=True,
     )[0] or 0
     answered = execute_query(
-        f"SELECT COUNT(*) FROM leads WHERE {cond.strip()} AND is_answered = 1 AND created_at BETWEEN ? AND ?",
+        f"SELECT COUNT(*) FROM leads WHERE {cond.strip()}{NOT_TEST_LEAD_COND} AND is_answered = 1 AND created_at BETWEEN ? AND ?",
         (start_str, end_str),
         fetchone=True,
     )[0] or 0
     sold = execute_query(
-        f"SELECT COUNT(*) FROM leads WHERE {cond.strip()} AND status = 'closed' AND is_sale = 1 AND (comment IS NULL OR comment NOT LIKE '%Автозакрытие%') AND created_at BETWEEN ? AND ?",
+        f"SELECT COUNT(*) FROM leads WHERE {cond.strip()} AND status = 'closed' AND is_sale = 1 AND (comment IS NULL OR comment NOT LIKE '%Автозакрытие%'){NOT_TEST_LEAD_COND} AND created_at BETWEEN ? AND ?",
         (start_str, end_str),
         fetchone=True,
     )[0] or 0
@@ -1159,17 +1166,17 @@ def _med_stats_for_period(start_dt, end_dt):
     end_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")
     cond = "direction = 'med'"
     total = execute_query(
-        f"SELECT COUNT(*) FROM leads WHERE {cond} AND created_at BETWEEN ? AND ?",
+        f"SELECT COUNT(*) FROM leads WHERE {cond}{NOT_TEST_LEAD_COND} AND created_at BETWEEN ? AND ?",
         (start_str, end_str),
         fetchone=True,
     )[0] or 0
     answered = execute_query(
-        f"SELECT COUNT(*) FROM leads WHERE {cond} AND is_answered = 1 AND created_at BETWEEN ? AND ?",
+        f"SELECT COUNT(*) FROM leads WHERE {cond}{NOT_TEST_LEAD_COND} AND is_answered = 1 AND created_at BETWEEN ? AND ?",
         (start_str, end_str),
         fetchone=True,
     )[0] or 0
     sold = execute_query(
-        f"SELECT COUNT(*) FROM leads WHERE {cond} AND status = 'closed' AND is_answered = 1 AND (comment IS NULL OR comment NOT LIKE '%Автозакрытие%') AND created_at BETWEEN ? AND ?",
+        f"SELECT COUNT(*) FROM leads WHERE {cond} AND status = 'closed' AND is_answered = 1 AND (comment IS NULL OR comment NOT LIKE '%Автозакрытие%'){NOT_TEST_LEAD_COND} AND created_at BETWEEN ? AND ?",
         (start_str, end_str),
         fetchone=True,
     )[0] or 0
@@ -1201,9 +1208,9 @@ async def stats(m: types.Message, state: FSMContext):
     # Владелец или общая: воронка по бизнесу без периода
     await chat_history_delete_messages(m.from_user.id, context="kpi")
     cond = _biz_leads_cond()
-    all_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE 1=1 AND {cond.strip()}", fetchone=True)[0] or 1
-    ans_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE is_answered=1 AND {cond.strip()}", fetchone=True)[0]
-    sold_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE status='closed' AND (comment IS NULL OR comment NOT LIKE '%Автозакрытие%') AND is_sale=1 AND {cond.strip()}", fetchone=True)[0]
+    all_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE 1=1 AND {cond.strip()}{NOT_TEST_LEAD_COND}", fetchone=True)[0] or 1
+    ans_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE is_answered=1 AND {cond.strip()}{NOT_TEST_LEAD_COND}", fetchone=True)[0]
+    sold_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE status='closed' AND (comment IS NULL OR comment NOT LIKE '%Автозакрытие%') AND is_sale=1 AND {cond.strip()}{NOT_TEST_LEAD_COND}", fetchone=True)[0]
     c_ans = round((ans_l / all_l) * 100, 1)
     c_sale = round((sold_l / (ans_l or 1)) * 100, 1)
     msg = await m.answer(
@@ -1413,12 +1420,12 @@ async def mgr_kpi(m: types.Message):
         sphere = row[3] if len(row) > 3 else None
         if sphere == 'med':
             continue
-        m_all = execute_query(f"SELECT COUNT(*) FROM leads WHERE manager_id=? AND {BIZ_LEAD_COND}", (mid,), fetchone=True)[0] or 1
-        m_ans = execute_query(f"SELECT COUNT(*) FROM leads WHERE manager_id=? AND is_answered=1 AND {BIZ_LEAD_COND}", (mid,), fetchone=True)[0]
-        m_sold = execute_query(f"SELECT COUNT(*) FROM leads WHERE manager_id=? AND status='closed' AND is_sale=1 AND (comment IS NULL OR comment NOT LIKE '%Автозакрытие%') AND {BIZ_LEAD_COND}", (mid,), fetchone=True)[0]
+        m_all = execute_query(f"SELECT COUNT(*) FROM leads WHERE manager_id=? AND {BIZ_LEAD_COND}{NOT_TEST_LEAD_COND}", (mid,), fetchone=True)[0] or 1
+        m_ans = execute_query(f"SELECT COUNT(*) FROM leads WHERE manager_id=? AND is_answered=1 AND {BIZ_LEAD_COND}{NOT_TEST_LEAD_COND}", (mid,), fetchone=True)[0]
+        m_sold = execute_query(f"SELECT COUNT(*) FROM leads WHERE manager_id=? AND status='closed' AND is_sale=1 AND (comment IS NULL OR comment NOT LIKE '%Автозакрытие%') AND {BIZ_LEAD_COND}{NOT_TEST_LEAD_COND}", (mid,), fetchone=True)[0]
         extra = execute_query("SELECT extra_sales FROM manager_extra_sales WHERE manager_id = ?", (mid,), fetchone=True)
         m_sold += (extra[0] if extra else 0)
-        m_t = execute_query(f"SELECT AVG(touches) FROM leads WHERE manager_id=? AND {BIZ_LEAD_COND}", (mid,), fetchone=True)[0] or 0
+        m_t = execute_query(f"SELECT AVG(touches) FROM leads WHERE manager_id=? AND {BIZ_LEAD_COND}{NOT_TEST_LEAD_COND}", (mid,), fetchone=True)[0] or 0
         perc = round((m_sold / (plan or 1)) * 100, 1)
         conv = round((m_ans / m_all) * 100, 1)
         txt += f"▪️ <b>{fio}</b>\n   План: {perc}% ({m_sold}/{plan})\n   Дозвон: {conv}%\n   Ср. касаний: {round(m_t, 1)}\n\n"
@@ -1464,12 +1471,12 @@ async def biz_leads_flow_cb(c: types.CallbackQuery, state: FSMContext):
     end_str = end.strftime("%Y-%m-%d %H:%M:%S")
     cond = " " + BIZ_LEAD_COND + " "
     total = execute_query(
-        f"SELECT COUNT(*) FROM leads WHERE {cond} AND created_at BETWEEN ? AND ?",
+        f"SELECT COUNT(*) FROM leads WHERE {cond}{NOT_TEST_LEAD_COND} AND created_at BETWEEN ? AND ?",
         (start_str, end_str),
         fetchone=True,
     )[0] or 0
     processed = execute_query(
-        f"SELECT COUNT(*) FROM leads WHERE {cond} AND is_answered = 1 AND created_at BETWEEN ? AND ?",
+        f"SELECT COUNT(*) FROM leads WHERE {cond}{NOT_TEST_LEAD_COND} AND is_answered = 1 AND created_at BETWEEN ? AND ?",
         (start_str, end_str),
         fetchone=True,
     )[0] or 0
@@ -1510,12 +1517,12 @@ async def biz_leads_flow_custom_period(m: types.Message, state: FSMContext):
     end_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")
     cond = " " + BIZ_LEAD_COND + " "
     total = execute_query(
-        f"SELECT COUNT(*) FROM leads WHERE {cond} AND created_at BETWEEN ? AND ?",
+        f"SELECT COUNT(*) FROM leads WHERE {cond}{NOT_TEST_LEAD_COND} AND created_at BETWEEN ? AND ?",
         (start_str, end_str),
         fetchone=True,
     )[0] or 0
     processed = execute_query(
-        f"SELECT COUNT(*) FROM leads WHERE {cond} AND is_answered = 1 AND created_at BETWEEN ? AND ?",
+        f"SELECT COUNT(*) FROM leads WHERE {cond}{NOT_TEST_LEAD_COND} AND is_answered = 1 AND created_at BETWEEN ? AND ?",
         (start_str, end_str),
         fetchone=True,
     )[0] or 0
@@ -2632,14 +2639,14 @@ async def distribute_leads_now(m: types.Message):
     # Если приём лидов выключен — свободных для раздачи нет
     l_on = execute_query("SELECT value FROM settings WHERE key = 'leads_enabled'", fetchone=True)
     if l_on is not None and str(l_on[0]).strip() == '0':
-        pending = execute_query(f"SELECT COUNT(*) FROM leads WHERE status = 'pending' AND {cond}", (), fetchone=True)[0] or 0
+        pending = execute_query(f"SELECT COUNT(*) FROM leads WHERE status = 'pending' AND {cond}{NOT_TEST_LEAD_COND}", (), fetchone=True)[0] or 0
         await m.answer(
             f"🔴 Приём лидов выключен (ВЫКЛ ЛИДЫ). Включите кнопку «🟢 ВКЛ ЛИДЫ» — тогда «Распределить лиды» сможет раздать {pending} из очереди.",
             reply_markup=get_main_menu(m.from_user.id),
         )
         return
     n = await distribute_pending_biz_leads()
-    pending_after = execute_query(f"SELECT COUNT(*) FROM leads WHERE status = 'pending' AND {cond}", (), fetchone=True)[0] or 0
+    pending_after = execute_query(f"SELECT COUNT(*) FROM leads WHERE status = 'pending' AND {cond}{NOT_TEST_LEAD_COND}", (), fetchone=True)[0] or 0
     total_biz_mgrs = execute_query(
         "SELECT COUNT(*) FROM users u WHERE (LOWER(u.role)='manager' AND (u.sphere='biz' OR u.sphere IS NULL OR TRIM(COALESCE(u.sphere,''))='')) OR (LOWER(u.role)='admin' AND (u.sphere='biz' OR u.sphere IS NULL OR TRIM(COALESCE(u.sphere,''))='') AND COALESCE(u.can_receive_leads,0)=1)",
         (),
@@ -2648,7 +2655,7 @@ async def distribute_leads_now(m: types.Message):
     msg = f"✅ Распределено лидов: {n}. В очереди осталось: {pending_after}."
     if n == 0 and pending_after > 0:
         in_progress = execute_query(
-            f"SELECT COUNT(*) FROM leads WHERE status IN ('active', 'chatting') AND manager_id IS NOT NULL AND {cond}",
+            f"SELECT COUNT(*) FROM leads WHERE status IN ('active', 'chatting') AND manager_id IS NOT NULL AND {cond}{NOT_TEST_LEAD_COND}",
             (),
             fetchone=True,
         )[0] or 0
@@ -2808,9 +2815,9 @@ async def med_stats_cb(c: types.CallbackQuery):
     start_str = start.strftime("%Y-%m-%d %H:%M:%S")
     cond = " direction = 'med' "
     period_cond = " (last_touch >= ? OR payment_date >= ?) "
-    all_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE {cond} AND {period_cond}", (start_str, start_str[:10]), fetchone=True)[0] or 0
-    ans_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE {cond} AND is_answered=1 AND {period_cond}", (start_str, start_str[:10]), fetchone=True)[0]
-    sold_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE {cond} AND status='closed' AND is_answered=1 AND (comment IS NULL OR comment NOT LIKE '%Автозакрытие%') AND {period_cond}", (start_str, start_str[:10]), fetchone=True)[0]
+    all_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE {cond}{NOT_TEST_LEAD_COND} AND {period_cond}", (start_str, start_str[:10]), fetchone=True)[0] or 0
+    ans_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE {cond}{NOT_TEST_LEAD_COND} AND is_answered=1 AND {period_cond}", (start_str, start_str[:10]), fetchone=True)[0]
+    sold_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE {cond}{NOT_TEST_LEAD_COND} AND status='closed' AND is_answered=1 AND (comment IS NULL OR comment NOT LIKE '%Автозакрытие%') AND {period_cond}", (start_str, start_str[:10]), fetchone=True)[0]
     c_ans = round((ans_l / (all_l or 1)) * 100, 1)
     c_sale = round((sold_l / (ans_l or 1)) * 100, 1)
     await c.message.edit_text(f"📈 <b>Медицина</b> ({period})\n\nПришло: {all_l}\nОбработано (дозвон): {ans_l} ({c_ans}%)\nПродано: {sold_l} ({c_sale}%)", parse_mode="HTML")
@@ -3002,15 +3009,15 @@ async def time_in_work_report(m: types.Message):
     lines = ["⏱ <b>Среднее время в работе</b> (от создания лида до закрытия):\n"]
     for direction, cond in [("Бизнес", BIZ_LEAD_COND + " AND is_sale = 1"), ("Медицина", "direction = 'med'")]:
         row = execute_query(
-            f"SELECT AVG((julianday(closed_at) - julianday(created_at)) * 24) FROM leads WHERE status = 'closed' AND closed_at IS NOT NULL AND created_at IS NOT NULL AND {cond}",
+            f"SELECT AVG((julianday(closed_at) - julianday(created_at)) * 24) FROM leads WHERE status = 'closed' AND closed_at IS NOT NULL AND created_at IS NOT NULL AND {cond}{NOT_TEST_LEAD_COND}",
             (), fetchone=True)
         avg_h = (row[0] if row and row[0] is not None else None) or 0
         if avg_h < 24:
             lines.append(f"▪️ {direction}: {round(avg_h, 1)} ч")
         else:
             lines.append(f"▪️ {direction}: {round(avg_h / 24, 1)} дн")
-    cnt_biz = execute_query("SELECT COUNT(*) FROM leads WHERE status = 'closed' AND closed_at IS NOT NULL AND created_at IS NOT NULL AND is_sale = 1 AND " + BIZ_LEAD_COND, (), fetchone=True)[0] or 0
-    cnt_med = execute_query("SELECT COUNT(*) FROM leads WHERE status = 'closed' AND closed_at IS NOT NULL AND created_at IS NOT NULL AND direction = 'med'", (), fetchone=True)[0] or 0
+    cnt_biz = execute_query("SELECT COUNT(*) FROM leads WHERE status = 'closed' AND closed_at IS NOT NULL AND created_at IS NOT NULL AND is_sale = 1 AND " + BIZ_LEAD_COND + NOT_TEST_LEAD_COND, (), fetchone=True)[0] or 0
+    cnt_med = execute_query("SELECT COUNT(*) FROM leads WHERE status = 'closed' AND closed_at IS NOT NULL AND created_at IS NOT NULL AND direction = 'med'" + NOT_TEST_LEAD_COND, (), fetchone=True)[0] or 0
     lines.append(f"\n(по {cnt_biz} и {cnt_med} закрытым лидам)")
     await m.answer("\n".join(lines), parse_mode="HTML")
 
@@ -3062,9 +3069,9 @@ async def med_plan_kpi(m: types.Message):
     st = execute_query("SELECT user_id, fio, plan FROM users WHERE role='manager' AND sphere='med'", fetchall=True)
     txt = "🎯 <b>План/KPI (Медицина)</b>\n\nПоказатели: План, Дозвон, Касания.\n\n"
     for mid, fio, plan in st:
-        m_all = execute_query("SELECT COUNT(*) FROM leads WHERE manager_id=? AND direction='med'", (mid,), fetchone=True)[0] or 1
-        m_ans = execute_query("SELECT COUNT(*) FROM leads WHERE manager_id=? AND direction='med' AND is_answered=1", (mid,), fetchone=True)[0]
-        m_t = execute_query("SELECT AVG(touches) FROM leads WHERE manager_id=? AND direction='med'", (mid,), fetchone=True)[0] or 0
+        m_all = execute_query("SELECT COUNT(*) FROM leads WHERE manager_id=? AND direction='med'" + NOT_TEST_LEAD_COND, (mid,), fetchone=True)[0] or 1
+        m_ans = execute_query("SELECT COUNT(*) FROM leads WHERE manager_id=? AND direction='med' AND is_answered=1" + NOT_TEST_LEAD_COND, (mid,), fetchone=True)[0]
+        m_t = execute_query("SELECT AVG(touches) FROM leads WHERE manager_id=? AND direction='med'" + NOT_TEST_LEAD_COND, (mid,), fetchone=True)[0] or 0
         conv = round((m_ans / m_all) * 100, 1)
         txt += f"▪️ <b>{fio}</b>  План: {plan}  Дозвон: {conv}%  Ср. касаний: {round(m_t, 1)}\n\n"
     await m.answer(txt or "Нет менеджеров медицины.", parse_mode="HTML")
@@ -3108,12 +3115,12 @@ async def med_leads_flow_cb(c: types.CallbackQuery, state: FSMContext):
     end_str = end.strftime("%Y-%m-%d %H:%M:%S")
     cond = " direction = 'med' "
     total = execute_query(
-        f"SELECT COUNT(*) FROM leads WHERE {cond} AND created_at BETWEEN ? AND ?",
+        f"SELECT COUNT(*) FROM leads WHERE {cond}{NOT_TEST_LEAD_COND} AND created_at BETWEEN ? AND ?",
         (start_str, end_str),
         fetchone=True,
     )[0] or 0
     processed = execute_query(
-        f"SELECT COUNT(*) FROM leads WHERE {cond} AND is_answered = 1 AND created_at BETWEEN ? AND ?",
+        f"SELECT COUNT(*) FROM leads WHERE {cond}{NOT_TEST_LEAD_COND} AND is_answered = 1 AND created_at BETWEEN ? AND ?",
         (start_str, end_str),
         fetchone=True,
     )[0] or 0
@@ -3154,12 +3161,12 @@ async def med_leads_flow_custom_period(m: types.Message, state: FSMContext):
     end_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")
     cond = " direction = 'med' "
     total = execute_query(
-        f"SELECT COUNT(*) FROM leads WHERE {cond} AND created_at BETWEEN ? AND ?",
+        f"SELECT COUNT(*) FROM leads WHERE {cond}{NOT_TEST_LEAD_COND} AND created_at BETWEEN ? AND ?",
         (start_str, end_str),
         fetchone=True,
     )[0] or 0
     processed = execute_query(
-        f"SELECT COUNT(*) FROM leads WHERE {cond} AND is_answered = 1 AND created_at BETWEEN ? AND ?",
+        f"SELECT COUNT(*) FROM leads WHERE {cond}{NOT_TEST_LEAD_COND} AND is_answered = 1 AND created_at BETWEEN ? AND ?",
         (start_str, end_str),
         fetchone=True,
     )[0] or 0
@@ -3425,13 +3432,13 @@ async def debug_biz(m: types.Message):
         return
     for uid, fio, sph in mgrs:
         cnt = execute_query(
-            f"SELECT COUNT(*) FROM leads WHERE manager_id = ? AND status IN ('active', 'chatting') AND {lead_cond}",
+            f"SELECT COUNT(*) FROM leads WHERE manager_id = ? AND status IN ('active', 'chatting') AND {lead_cond}{NOT_TEST_LEAD_COND}",
             (uid,),
             fetchone=True,
         )[0] or 0
         st = "🟢 свободен" if cnt == 0 else f"🔴 в работе: {cnt}"
         lines.append(f"• {fio or uid} (sphere={sph!r}) — {st}")
-    pending = execute_query(f"SELECT COUNT(*) FROM leads WHERE status = 'pending' AND {lead_cond}", (), fetchone=True)[0] or 0
+    pending = execute_query(f"SELECT COUNT(*) FROM leads WHERE status = 'pending' AND {lead_cond}{NOT_TEST_LEAD_COND}", (), fetchone=True)[0] or 0
     lines.append(f"\n📥 В очереди: {pending}")
     free = get_free_manager_for_direction('biz')
     lines.append(f"\nСвободный для раздачи: {'да (id=' + str(free) + ')' if free else 'нет'}")
@@ -3443,12 +3450,12 @@ async def biz_back_to_queue(m: types.Message):
     if not is_owner(m.from_user.id):
         return
     count = execute_query(
-        f"SELECT COUNT(*) FROM leads WHERE {BIZ_LEAD_COND} AND status IN ('active', 'chatting')",
+        f"SELECT COUNT(*) FROM leads WHERE {BIZ_LEAD_COND}{NOT_TEST_LEAD_COND} AND status IN ('active', 'chatting')",
         (),
         fetchone=True,
     )[0] or 0
     execute_query(
-        f"UPDATE leads SET status = 'pending', manager_id = NULL WHERE {BIZ_LEAD_COND} AND status IN ('active', 'chatting')"
+        f"UPDATE leads SET status = 'pending', manager_id = NULL WHERE {BIZ_LEAD_COND}{NOT_TEST_LEAD_COND} AND status IN ('active', 'chatting')"
     )
     execute_query("UPDATE users SET is_busy = 0")
     if count > 0:
@@ -3462,12 +3469,12 @@ async def biz_back_to_queue_btn(m: types.Message):
     if not is_owner(m.from_user.id):
         return
     count = execute_query(
-        f"SELECT COUNT(*) FROM leads WHERE {BIZ_LEAD_COND} AND status IN ('active', 'chatting')",
+        f"SELECT COUNT(*) FROM leads WHERE {BIZ_LEAD_COND}{NOT_TEST_LEAD_COND} AND status IN ('active', 'chatting')",
         (),
         fetchone=True,
     )[0] or 0
     execute_query(
-        f"UPDATE leads SET status = 'pending', manager_id = NULL WHERE {BIZ_LEAD_COND} AND status IN ('active', 'chatting')"
+        f"UPDATE leads SET status = 'pending', manager_id = NULL WHERE {BIZ_LEAD_COND}{NOT_TEST_LEAD_COND} AND status IN ('active', 'chatting')"
     )
     execute_query("UPDATE users SET is_busy = 0")
     if count > 0:
