@@ -34,9 +34,14 @@ def _append_biz_lead_to_sheet(date_str, fio, phone, vid_biznesa, bol_klienta, ko
     if not GOOGLE_SHEET_ID or not GOOGLE_CREDENTIALS_JSON:
         return
     try:
+        import base64
         import gspread
         from google.oauth2.service_account import Credentials
-        info = json.loads(GOOGLE_CREDENTIALS_JSON)
+        creds_str = GOOGLE_CREDENTIALS_JSON.strip()
+        # Amvera не разрешает кавычки в переменных — можно передать JSON в Base64
+        if creds_str.startswith("eyJ"):
+            creds_str = base64.b64decode(creds_str).decode("utf-8")
+        info = json.loads(creds_str)
         scopes = ["https://www.googleapis.com/auth/spreadsheets"]
         creds = Credentials.from_service_account_info(info, scopes=scopes)
         gc = gspread.authorize(creds)
@@ -400,6 +405,7 @@ def get_owner_biz_menu():
     kb.button(text="📋 Распределить лиды"); kb.button(text="📥 Вернуть лиды в очередь")
     kb.button(text="📌 Доработать"); kb.button(text="👤 Назначить админа бизнеса"); kb.button(text="👑 Дать права владельца")
     kb.button(text="📂 Загрузка данных"); kb.button(text="⏱ Время в работе"); kb.button(text="🔥 Уволить"); kb.button(text="🎯 Поставить План")
+    kb.button(text="📋 Создать тестовый лид")
     kb.button(text="◀ Назад")
     kb.adjust(2)
     return kb.as_markup(resize_keyboard=True)
@@ -1080,6 +1086,40 @@ async def owner_biz(m: types.Message, state: FSMContext):
     if u and u[0] == 'owner':
         await state.update_data(owner_current_sphere='biz')
         await m.answer("💼 Меню «Бизнес»", reply_markup=get_owner_biz_menu())
+
+@dp.message(F.text == "📋 Создать тестовый лид")
+async def owner_create_test_lead(m: types.Message, state: FSMContext):
+    """Владелец: создать тестовый лид, назначить себе и отправить карточку с кнопками менеджера (Итог звонка) для проверки процесса."""
+    if not is_owner(m.from_user.id):
+        return
+    await state.update_data(owner_current_sphere='biz')
+    owner_id = m.from_user.id
+    now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    phone = f"TEST_{owner_id}_{int(datetime.now().timestamp())}"
+    execute_query(
+        """INSERT OR REPLACE INTO leads (phone, name, status, manager_id, direction, created_at, touches)
+           VALUES (?, ?, 'active', ?, 'biz', ?, 0)""",
+        (phone, "Тестовый лид (директор)", owner_id, now_iso),
+    )
+    execute_query(
+        "INSERT OR REPLACE INTO chat_sessions (user_id, phone, last_outgoing_at, reminder_sent) VALUES (?, ?, ?, 0)",
+        (owner_id, phone, now_iso),
+    )
+    execute_query("UPDATE users SET is_busy = 1 WHERE user_id = ?", (owner_id,))
+    log_lead_event(phone, "status_change", "Создан тестовый лид (владелец)", owner_id)
+    text = (
+        f"👤 <b>Тестовый лид (директор)</b>\n"
+        f"📞 {phone}\n"
+        f"📂 Бизнес · Статус: active\n"
+        f"👔 Менеджер: вы\n\n"
+        f"Проверка процесса: нажмите «📋 Итог звонка» и пройдите этапы закрытия (Сфера → Боль клиента → Комментарий → Перезвон). После закрытия вернётся меню владельца."
+    )
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone[:30]}")
+    kb.button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone[:30]}")
+    kb.button(text="📋 Итог звонка", callback_data=f"cl_{phone[:30]}")
+    kb.adjust(2, 1)
+    await m.answer(text, parse_mode="HTML", reply_markup=kb.as_markup())
 
 @dp.message(F.text == "◀ Назад")
 @dp.message(F.text == "◀ Назад в меню")
