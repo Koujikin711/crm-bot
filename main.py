@@ -207,6 +207,8 @@ class Form(StatesGroup):
     med_income_period = State()
     # Бизнес: поступления лидов (кастомная дата/период)
     biz_leads_custom_period = State()
+    # Маркетинг: статистика (кастомный период)
+    marketing_stats_custom = State()
     # Админ бизнеса: статистика за период (диапазон дат)
     admin_biz_stats_custom = State()
     # Медицина: поступления лидов (кастомная дата/период)
@@ -326,6 +328,10 @@ def get_main_menu(uid):
         kb.button(text="🏥 МЕДИЦИНА"); kb.button(text="💼 БИЗНЕС")
         kb.adjust(2)
         return kb.as_markup(resize_keyboard=True)
+    if role == 'marketing':
+        kb.button(text="📈 Статистика")
+        kb.adjust(1)
+        return kb.as_markup(resize_keyboard=True)
     if role == 'admin' and sphere == 'med':
         kb.button(text="📊 Нагруженность"); kb.button(text="📈 Статистика лидов")
         kb.button(text="📅 Записать к Ганчине"); kb.button(text="📋 Лиды в работе"); kb.button(text="📥 Поступления лидов (мед)")
@@ -373,6 +379,7 @@ def get_owner_biz_menu():
     kb.button(text="◀ Назад")
     kb.adjust(2)
     return kb.as_markup(resize_keyboard=True)
+
 
 def get_lead_direction(phone):
     row = execute_query("SELECT direction FROM leads WHERE phone = ?", (phone,), fetchone=True)
@@ -1082,22 +1089,52 @@ def _biz_stats_for_period(start_dt, end_dt):
     )[0] or 0
     return total, answered, sold
 
+def _med_stats_for_period(start_dt, end_dt):
+    """Вернуть (total, answered, sold) за период по created_at для мед-лидов."""
+    start_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+    end_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")
+    cond = "direction = 'med'"
+    total = execute_query(
+        f"SELECT COUNT(*) FROM leads WHERE {cond} AND created_at BETWEEN ? AND ?",
+        (start_str, end_str),
+        fetchone=True,
+    )[0] or 0
+    answered = execute_query(
+        f"SELECT COUNT(*) FROM leads WHERE {cond} AND is_answered = 1 AND created_at BETWEEN ? AND ?",
+        (start_str, end_str),
+        fetchone=True,
+    )[0] or 0
+    sold = execute_query(
+        f\"SELECT COUNT(*) FROM leads WHERE {cond} AND status = 'closed' AND is_answered = 1 AND (comment IS NULL OR comment NOT LIKE '%Автозакрытие%') AND created_at BETWEEN ? AND ?\",
+        (start_str, end_str),
+        fetchone=True,
+    )[0] or 0
+    return total, answered, sold
+
 @dp.message(F.text == "📈 Статистика")
 async def stats(m: types.Message, state: FSMContext):
     u = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (m.from_user.id,), fetchone=True)
     if not u:
         return
     role, sphere = u[0], u[1]
-    # Админ бизнеса: сначала выбор периода
+    # Маркетинг: выбор направления (медицина / бизнес)
+    if role == 'marketing':
+        kb = InlineKeyboardBuilder()
+        kb.button(text="🏥 Медицина", callback_data="mktstat_dir_med")
+        kb.button(text="💼 Бизнес", callback_data="mktstat_dir_biz")
+        kb.adjust(2)
+        await m.answer("Выберите направление для статистики:", reply_markup=kb.as_markup())
+        return
+    # Админ бизнеса: сначала выбор периода по бизнесу
     if role == 'admin' and (sphere == 'biz' or sphere is None):
         kb = InlineKeyboardBuilder()
         kb.button(text="Сегодня", callback_data="admstat_today")
         kb.button(text="Вчера", callback_data="admstat_yesterday")
         kb.button(text="Другая дата (диапазон)", callback_data="admstat_custom")
         kb.adjust(1)
-        await m.answer("За какой период показать статистику?", reply_markup=kb.as_markup())
+        await m.answer("За какой период показать статистику (Бизнес)?", reply_markup=kb.as_markup())
         return
-    # Владелец или общая: воронка без периода
+    # Владелец или общая: воронка по бизнесу без периода
     await chat_history_delete_messages(m.from_user.id, context="kpi")
     cond = _biz_leads_cond()
     all_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE 1=1 AND {cond.strip()}", fetchone=True)[0] or 1
@@ -1105,7 +1142,13 @@ async def stats(m: types.Message, state: FSMContext):
     sold_l = execute_query(f"SELECT COUNT(*) FROM leads WHERE status='closed' AND (comment IS NULL OR comment NOT LIKE '%Автозакрытие%') AND is_answered=1 AND {cond.strip()}", fetchone=True)[0]
     c_ans = round((ans_l / all_l) * 100, 1)
     c_sale = round((sold_l / (ans_l or 1)) * 100, 1)
-    msg = await m.answer(f"📊 <b>ОБЩАЯ ВОРОНКА (Бизнес)</b>\n\n📥 Лидов: {all_l}\n📞 Дозвоны: {ans_l} ({c_ans}%)\n💰 Продажи: {sold_l} ({c_sale}% из дозвонов)", parse_mode="HTML")
+    msg = await m.answer(
+        "📊 <b>ОБЩАЯ ВОРОНКА (Бизнес)</b>\n\n"
+        f"📥 Лидов: {all_l}\n"
+        f"📞 Дозвоны: {ans_l} ({c_ans}%)\n"
+        f"💰 Продажи: {sold_l} ({c_sale}% из дозвонов)",
+        parse_mode="HTML",
+    )
     chat_history_add(m.from_user.id, msg.message_id, context="stats")
 
 @dp.callback_query(F.data.startswith("admstat_"))
@@ -1144,6 +1187,119 @@ async def admin_biz_stats_cb(c: types.CallbackQuery, state: FSMContext):
     await c.message.edit_text(text, parse_mode="HTML")
     await c.answer()
 
+@dp.callback_query(F.data.startswith("mktstat_dir_"))
+async def marketing_stats_choose_direction(c: types.CallbackQuery, state: FSMContext):
+    u = execute_query("SELECT role FROM users WHERE user_id = ?", (c.from_user.id,), fetchone=True)
+    if not u or u[0] != 'marketing':
+        await c.answer()
+        return
+    direction = c.data.replace("mktstat_dir_", "")
+    if direction not in ("med", "biz"):
+        await c.answer()
+        return
+    kb = InlineKeyboardBuilder()
+    kb.button(text="Сегодня", callback_data=f"mktstat_{direction}_today")
+    kb.button(text="Вчера", callback_data=f"mktstat_{direction}_yesterday")
+    kb.button(text="Период", callback_data=f"mktstat_{direction}_custom")
+    kb.adjust(1)
+    title = "Медицина" if direction == "med" else "Бизнес"
+    await c.message.edit_text(f"Статистика ({title}). Выберите период:", reply_markup=kb.as_markup())
+    await c.answer()
+
+@dp.callback_query(F.data.startswith("mktstat_"))
+async def marketing_stats_period_cb(c: types.CallbackQuery, state: FSMContext):
+    u = execute_query("SELECT role FROM users WHERE user_id = ?", (c.from_user.id,), fetchone=True)
+    if not u or u[0] != 'marketing':
+        await c.answer()
+        return
+    parts = c.data.split("_", 2)
+    if len(parts) < 3:
+        await c.answer()
+        return
+    _, direction, period = parts
+    now = datetime.now()
+    if period == "custom":
+        await state.set_state(Form.marketing_stats_custom)
+        await state.update_data(mkt_direction=direction)
+        title = "Медицина" if direction == "med" else "Бизнес"
+        await c.message.edit_text(
+            f"Статистика ({title}). Введите диапазон дат:\nПример: 2026-02-01 2026-02-26"
+        )
+        await c.answer()
+        return
+    if period == "today":
+        start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+        end = now
+        label = "сегодня"
+    else:  # yesterday
+        start = (now - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        end = start + timedelta(days=1) - timedelta(seconds=1)
+        label = "вчера"
+    if direction == "biz":
+        total, answered, sold = _biz_stats_for_period(start, end)
+        title = "Бизнес"
+    else:
+        total, answered, sold = _med_stats_for_period(start, end)
+        title = "Медицина"
+    not_answered = total - answered
+    conv_contact = round((answered / (total or 1)) * 100, 1)
+    conv_sale = round((sold / (answered or 1)) * 100, 1)
+    text = (
+        f"📊 <b>Статистика ({title}) — {label}</b>\n\n"
+        f"📥 Поступление лидов: {total}\n"
+        f"❌ Не ответивших: {not_answered}\n"
+        f"📞 Конверсия на дозвон: {conv_contact}% ({answered} из {total})\n"
+        f"💰 Продажи: {sold}\n"
+        f"📈 Конверсия в продажу (из дозвонов): {conv_sale}%"
+    )
+    await c.message.edit_text(text, parse_mode="HTML")
+    await c.answer()
+
+@dp.message(Form.marketing_stats_custom)
+async def marketing_stats_custom_done(m: types.Message, state: FSMContext):
+    u = execute_query("SELECT role FROM users WHERE user_id = ?", (m.from_user.id,), fetchone=True)
+    if not u or u[0] != 'marketing':
+        await state.clear()
+        return
+    data = await state.get_data()
+    direction = data.get("mkt_direction") or "biz"
+    parts = (m.text or "").strip().split()
+    try:
+        if len(parts) == 1:
+            d1 = datetime.strptime(parts[0], "%Y-%m-%d").date()
+            d2 = d1
+        elif len(parts) == 2:
+            d1 = datetime.strptime(parts[0], "%Y-%m-%d").date()
+            d2 = datetime.strptime(parts[1], "%Y-%m-%d").date()
+        else:
+            raise ValueError()
+        if d1 > d2:
+            d1, d2 = d2, d1
+        start = datetime.combine(d1, datetime.min.time())
+        end = datetime.combine(d2, datetime.max.time())
+    except ValueError:
+        await m.answer("Неверный формат. Пример:\n2026-02-24\nили\n2026-02-01 2026-02-26")
+        return
+    if direction == "biz":
+        total, answered, sold = _biz_stats_for_period(start, end)
+        title = "Бизнес"
+    else:
+        total, answered, sold = _med_stats_for_period(start, end)
+        title = "Медицина"
+    not_answered = total - answered
+    conv_contact = round((answered / (total or 1)) * 100, 1)
+    conv_sale = round((sold / (answered or 1)) * 100, 1)
+    label = f"{d1} — {d2}" if d1 != d2 else str(d1)
+    text = (
+        f"📊 <b>Статистика ({title}) — {label}</b>\n\n"
+        f"📥 Поступление лидов: {total}\n"
+        f"❌ Не ответивших: {not_answered}\n"
+        f"📞 Конверсия на дозвон: {conv_contact}% ({answered} из {total})\n"
+        f"💰 Продажи: {sold}\n"
+        f"📈 Конверсия в продажу (из дозвонов): {conv_sale}%"
+    )
+    await m.answer(text, parse_mode="HTML")
+    await state.clear()
 @dp.message(Form.admin_biz_stats_custom)
 async def admin_biz_stats_custom_done(m: types.Message, state: FSMContext):
     u = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (m.from_user.id,), fetchone=True)
@@ -1416,6 +1572,7 @@ async def reg_fio(m: types.Message, state: FSMContext):
     kb = InlineKeyboardBuilder()
     kb.button(text="🏥 МЕДИЦИНА", callback_data=f"ap_med_{m.from_user.id}")
     kb.button(text="💼 БИЗНЕС", callback_data=f"ap_biz_{m.from_user.id}")
+    kb.button(text="📊 МАРКЕТИНГ", callback_data=f"ap_mkt_{m.from_user.id}")
     kb.button(text="❌ ОТКЛОНИТЬ", callback_data=f"rj_{m.from_user.id}")
     kb.adjust(2)
     msg_text = f"🔔 ЗАЯВКА: {m.text} (ID: {m.from_user.id})"
@@ -1455,6 +1612,19 @@ async def ap_biz(c: types.CallbackQuery):
     execute_query("INSERT INTO users (user_id, role, fio, sphere) VALUES (?, 'manager', ?, 'biz')", (uid, fio))
     await bot.send_message(uid, "🎉 Одобрено (Бизнес)! Жми /start")
     await c.message.edit_text(f"✅ {fio} — Бизнес.")
+    await c.answer()
+
+@dp.callback_query(F.data.startswith("ap_mkt_"))
+async def ap_mkt(c: types.CallbackQuery):
+    uid = int(c.data.split("_")[-1])
+    row = execute_query("SELECT fio FROM pending_reg WHERE user_id = ?", (uid,), fetchone=True)
+    if not row:
+        await c.answer("Заявка уже обработана."); return
+    fio = row[0]
+    execute_query("DELETE FROM pending_reg WHERE user_id = ?", (uid,))
+    execute_query("INSERT INTO users (user_id, role, fio, sphere) VALUES (?, 'marketing', ?, NULL)", (uid, fio))
+    await bot.send_message(uid, "🎉 Одобрено (Маркетинг)! Жми /start")
+    await c.message.edit_text(f"✅ {fio} — Маркетинг.")
     await c.answer()
 
 @dp.callback_query(F.data.startswith("rj_"))
