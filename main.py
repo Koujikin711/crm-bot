@@ -76,8 +76,28 @@ def _append_biz_lead_to_sheet(date_str, fio, phone, vid_biznesa, bol_klienta, ko
         creds = Credentials.from_service_account_info(info, scopes=scopes)
         gc = gspread.authorize(creds)
         logging.info("CRM: Google Sheet append start: sheet_id=%s tab=%r phone=%s", GOOGLE_SHEET_ID, GOOGLE_SHEET_TAB_NAME, phone)
-        sh = gc.open_by_key(GOOGLE_SHEET_ID)
-        wks = sh.worksheet(GOOGLE_SHEET_TAB_NAME)
+        try:
+            sh = gc.open_by_key(GOOGLE_SHEET_ID)
+        except (SpreadsheetNotFound, APIError) as e:
+            if getattr(getattr(e, "response", None), "status_code", None) == 404 or "404" in str(e):
+                logging.warning(
+                    "CRM: Google Sheet 404 — таблица не найдена или нет доступа. Проверь: 1) GOOGLE_SHEET_ID=%s совпадает с ID из URL таблицы; 2) Таблица расшарена на client_email из ключа (Редактор).",
+                    GOOGLE_SHEET_ID,
+                )
+            else:
+                logging.warning("CRM: Google Sheet open_by_key failed: %s", e)
+            return
+        try:
+            wks = sh.worksheet(GOOGLE_SHEET_TAB_NAME)
+        except (WorksheetNotFound, APIError) as e:
+            if getattr(getattr(e, "response", None), "status_code", None) == 404 or "404" in str(e):
+                logging.warning(
+                    "CRM: Google Sheet 404 — вкладка не найдена. GOOGLE_SHEET_TAB_NAME=%r должно точно совпадать с названием вкладки внизу таблицы (пробелы, буквы).",
+                    GOOGLE_SHEET_TAB_NAME,
+                )
+            else:
+                logging.warning("CRM: Google Sheet worksheet failed: %s", e)
+            return
         row = [date_str, fio or "", phone or "", vid_biznesa or "", bol_klienta or "", kommentariy or "", perezvon or ""]
         wks.append_row(row, value_input_option="USER_ENTERED")
         logging.info("CRM: appended biz lead row to Google Sheet: %s", phone)
