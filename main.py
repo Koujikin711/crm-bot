@@ -50,8 +50,11 @@ def _append_biz_lead_to_sheet(date_str, fio, phone, vid_biznesa, bol_klienta, ko
                 b64 = creds_str.replace("\n", "").replace(" ", "").replace("\r", "")
                 decoded = base64.b64decode(b64).decode("utf-8")
                 info = json.loads(decoded)
-            except Exception:
-                pass
+            except Exception as e:
+                logging.warning(
+                    "CRM: GOOGLE_CREDENTIALS_JSON (длина=%s, начало=%r) — Base64/JSON ошибка: %s",
+                    len(creds_str), creds_str[:20] if len(creds_str) >= 20 else creds_str, e
+                )
         if info is None:
             try:
                 info = json.loads(creds_str)
@@ -59,8 +62,9 @@ def _append_biz_lead_to_sheet(date_str, fio, phone, vid_biznesa, bol_klienta, ko
                 pass
         if info is None:
             logging.warning(
-                "CRM: GOOGLE_CREDENTIALS_JSON не распознан. Задайте ключ в Base64: "
-                "python to_base64_creds.py ключ.json → скопировать вывод в переменную (без кавычек)."
+                "CRM: GOOGLE_CREDENTIALS_JSON не распознан (длина=%s). Задайте ключ в Base64: "
+                "python to_base64_creds.py ключ.json → скопировать вывод в переменную (без кавычек).",
+                len(creds_str)
             )
             return
         scopes = ["https://www.googleapis.com/auth/spreadsheets"]
