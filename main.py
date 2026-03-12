@@ -38,6 +38,7 @@ def _append_biz_lead_to_sheet(date_str, fio, phone, vid_biznesa, bol_klienta, ko
     try:
         import base64
         import gspread
+        from gspread.exceptions import APIError, SpreadsheetNotFound, WorksheetNotFound
         from google.oauth2.service_account import Credentials
         creds_str = GOOGLE_CREDENTIALS_JSON.strip().strip('"').strip("'")
         if not creds_str:
@@ -74,11 +75,27 @@ def _append_biz_lead_to_sheet(date_str, fio, phone, vid_biznesa, bol_klienta, ko
         scopes = ["https://www.googleapis.com/auth/spreadsheets"]
         creds = Credentials.from_service_account_info(info, scopes=scopes)
         gc = gspread.authorize(creds)
+        logging.info("CRM: Google Sheet append start: sheet_id=%s tab=%r phone=%s", GOOGLE_SHEET_ID, GOOGLE_SHEET_TAB_NAME, phone)
         sh = gc.open_by_key(GOOGLE_SHEET_ID)
         wks = sh.worksheet(GOOGLE_SHEET_TAB_NAME)
         row = [date_str, fio or "", phone or "", vid_biznesa or "", bol_klienta or "", kommentariy or "", perezvon or ""]
         wks.append_row(row, value_input_option="USER_ENTERED")
         logging.info("CRM: appended biz lead row to Google Sheet: %s", phone)
+    except SpreadsheetNotFound as e:
+        logging.warning(
+            "CRM: Google Sheet SpreadsheetNotFound (sheet_id=%s). Проверь GOOGLE_SHEET_ID и доступ (Share) на client_email сервисного аккаунта. %s",
+            GOOGLE_SHEET_ID,
+            e,
+        )
+    except WorksheetNotFound as e:
+        logging.warning(
+            "CRM: Google Sheet WorksheetNotFound (sheet_id=%s tab=%r). Проверь имя вкладки и переменную GOOGLE_SHEET_TAB_NAME. %s",
+            GOOGLE_SHEET_ID,
+            GOOGLE_SHEET_TAB_NAME,
+            e,
+        )
+    except APIError as e:
+        logging.warning("CRM: Google Sheet APIError (sheet_id=%s tab=%r): %s", GOOGLE_SHEET_ID, GOOGLE_SHEET_TAB_NAME, e)
     except Exception as e:
         logging.warning("CRM: Google Sheet append failed (check GOOGLE_SHEET_ID and service account access): %s", e)
 
