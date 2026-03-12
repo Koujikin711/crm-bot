@@ -75,14 +75,15 @@ def _append_biz_lead_to_sheet(date_str, fio, phone, vid_biznesa, bol_klienta, ko
         scopes = ["https://www.googleapis.com/auth/spreadsheets"]
         creds = Credentials.from_service_account_info(info, scopes=scopes)
         gc = gspread.authorize(creds)
-        logging.info("CRM: Google Sheet append start: sheet_id=%s tab=%r phone=%s", GOOGLE_SHEET_ID, GOOGLE_SHEET_TAB_NAME, phone)
+        client_email = info.get("client_email") or "(не найден)"
+        logging.info("CRM: Google Sheet append start: sheet_id=%s tab=%r client_email=%s phone=%s", GOOGLE_SHEET_ID, GOOGLE_SHEET_TAB_NAME, client_email, phone)
         try:
             sh = gc.open_by_key(GOOGLE_SHEET_ID)
         except (SpreadsheetNotFound, APIError) as e:
             if getattr(getattr(e, "response", None), "status_code", None) == 404 or "404" in str(e):
                 logging.warning(
-                    "CRM: Google Sheet 404 — таблица не найдена или нет доступа. Проверь: 1) GOOGLE_SHEET_ID=%s совпадает с ID из URL таблицы; 2) Таблица расшарена на client_email из ключа (Редактор).",
-                    GOOGLE_SHEET_ID,
+                    "CRM: Google Sheet 404 — таблица не найдена или нет доступа. Добавь в «Поделиться» именно этот email (Редактор): %s",
+                    client_email,
                 )
             else:
                 logging.warning("CRM: Google Sheet open_by_key failed: %s", e)
