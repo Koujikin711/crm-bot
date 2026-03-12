@@ -48,8 +48,12 @@ def _append_biz_lead_to_sheet(date_str, fio, phone, vid_biznesa, bol_klienta, ko
         if not creds_str.startswith("{"):
             try:
                 b64 = creds_str.replace("\n", "").replace(" ", "").replace("\r", "")
-                decoded = base64.b64decode(b64).decode("utf-8")
-                info = json.loads(decoded)
+                decoded = base64.b64decode(b64)
+                try:
+                    text = decoded.decode("utf-8")
+                except UnicodeDecodeError:
+                    text = decoded.decode("latin-1")
+                info = json.loads(text)
             except Exception as e:
                 logging.warning(
                     "CRM: GOOGLE_CREDENTIALS_JSON (длина=%s, начало=%r) — Base64/JSON ошибка: %s",
