@@ -31,8 +31,11 @@ BIZ_LEAD_COND = "(direction = 'biz' OR direction IS NULL OR TRIM(COALESCE(direct
 NOT_TEST_LEAD_COND = " AND (phone NOT LIKE 'TEST_%')"
 
 
-def _append_biz_lead_to_sheet(date_str, fio, phone, vid_biznesa, bol_klienta, kommentariy, perezvon):
-    """Добавить строку в Google Sheet «База данных лидов». Вызывать из потока (sync)."""
+def _append_biz_lead_to_sheet(date_str, fio, phone, vid_biznesa, bol_klienta, kommentariy, perezvon, status_text):
+    """Добавить строку в Google Sheet «База данных лидов». Вызывать из потока (sync).
+
+    Колонки: Дата, ФИО, Номер, Вид бизнеса, Боль клиента, Комментарий, Перезвон, Статус.
+    """
     if not GOOGLE_SHEET_ID or not GOOGLE_CREDENTIALS_JSON:
         return
     try:
@@ -99,7 +102,16 @@ def _append_biz_lead_to_sheet(date_str, fio, phone, vid_biznesa, bol_klienta, ko
             else:
                 logging.warning("CRM: Google Sheet worksheet failed: %s", e)
             return
-        row = [date_str, fio or "", phone or "", vid_biznesa or "", bol_klienta or "", kommentariy or "", perezvon or ""]
+        row = [
+            date_str,
+            fio or "",
+            phone or "",
+            vid_biznesa or "",
+            bol_klienta or "",
+            kommentariy or "",
+            perezvon or "",
+            status_text or "",
+        ]
         wks.append_row(row, value_input_option="USER_ENTERED")
         logging.info("CRM: appended biz lead row to Google Sheet: %s", phone)
     except SpreadsheetNotFound as e:
@@ -2503,16 +2515,34 @@ async def cl_fin(m: types.Message, state: FSMContext):
     c_sphere = d.get('c_sphere') or ''
     c_pain = d.get('c_pain') or ''
     c_comment = d.get('c_comment') or ''
+    # Статус для столбца «Статус» в Google Sheet
+    c_status_code = d.get('c_status')
+    if c_status_code == 's':
+        status_text = "Успешно"
+    elif c_status_code == 't' or (perezvon and perezvon.lower() != "нет"):
+        status_text = "В работе"
+    else:
+        status_text = "Неуспешно"
     if st == "closed":
         now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         is_sale = 1 if d['c_status'] == 's' else 0  # только «Оплатил» = продажа для плана/KPI
         execute_query("UPDATE leads SET status=?, sphere=?, comment=?, is_answered=?, is_sale=?, closed_at=? WHERE phone=?", (st, c_sphere, c_comment, ans, is_sale, now_iso, c_phone))
-        # Запись в Google Sheet «База данных лидов» (Дата, ФИО, Номер, Вид бизнеса, Боль клиента, Комментарий, Перезвон)
+        # Запись в Google Sheet «База данных лидов» (Дата, ФИО, Номер, Вид бизнеса, Боль клиента, Комментарий, Перезвон, Статус)
         lead_row = execute_query("SELECT name FROM leads WHERE phone = ?", (c_phone,), fetchone=True)
         lead_name = (lead_row[0] if lead_row else None) or c_phone
         date_str = datetime.now().strftime("%d.%m.%Y %H:%M")
         try:
-            await asyncio.to_thread(_append_biz_lead_to_sheet, date_str, lead_name, c_phone, c_sphere, c_pain, c_comment, perezvon)
+            await asyncio.to_thread(
+                _append_biz_lead_to_sheet,
+                date_str,
+                lead_name,
+                c_phone,
+                c_sphere,
+                c_pain,
+                c_comment,
+                perezvon,
+                status_text,
+            )
         except Exception as e:
             logging.warning("CRM: sheet append thread error: %s", e)
         execute_query("UPDATE leads SET status=?, sphere=?, comment=?, is_answered=? WHERE phone=?", (st, c_sphere, c_comment, ans, c_phone))
