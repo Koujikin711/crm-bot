@@ -9,6 +9,8 @@ except ImportError:
     pass
 
 API_TOKEN = os.environ.get("API_TOKEN") or "8404693091:AAEGJlbIy-toCi5tOqRllt5o1P3oRHkFyPE"
+# Если задано — при старте проверим, что бот запущен под этим username (защита от чужого токена)
+EXPECTED_BOT_USERNAME = os.environ.get("EXPECTED_BOT_USERNAME", "").strip().lstrip("@")
 ID_INSTANCE = os.environ.get("ID_INSTANCE") or "7103499086"
 API_TOKEN_INSTANCE = os.environ.get("API_TOKEN_INSTANCE") or "c143271a593d461a9bef407fcaaedca3e2c4268346f143f3b8"
 API_URL = (os.environ.get("API_URL") or "https://7103.api.greenapi.com").strip().rstrip("/")

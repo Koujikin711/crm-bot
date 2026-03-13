@@ -16,7 +16,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import (
-    API_TOKEN, ID_INSTANCE, API_TOKEN_INSTANCE, API_URL,
+    API_TOKEN, EXPECTED_BOT_USERNAME, ID_INSTANCE, API_TOKEN_INSTANCE, API_URL,
     MED_ID_INSTANCE, MED_API_TOKEN, MED_API_URL,
     DB_PATH, OWNER_ID, DOCTOR_LIMITS, CHATTING_IDLE_MINUTES,
     REMINDER_24H_HOURS, REMINDER_24H_WINDOW_HOURS,
@@ -788,16 +788,21 @@ async def _process_wa_instance(instance_name, base_url, instance_id, token):
                 logging.info("%s: получено сообщение от %s (typeWebhook=%s)", instance_name.upper(), phone, tw)
                 print(f"[CRM] {instance_name.upper()}: получено сообщение от {phone}")
                 chat_id = f"{phone}@c.us"
-                exist = execute_query("SELECT manager_id, name, status, direction FROM leads WHERE phone = ?", (phone,), fetchone=True)
+                # Ищем лид по номеру И направлению (med/biz), чтобы сообщения медицины не терялись при наличии у номера и biz-лида
+                exist = execute_query(
+                    "SELECT manager_id, name, status, direction FROM leads WHERE phone = ? AND (direction = ? OR direction IS NULL) ORDER BY last_touch DESC LIMIT 1",
+                    (phone, instance_name),
+                    fetchone=True,
+                )
                 if exist:
                     mgr_id, c_name, status = exist[0], exist[1], exist[2]
-                    lead_dir = (exist[3] or 'biz') if len(exist) > 3 else 'biz'
+                    lead_dir = (exist[3] or instance_name) if len(exist) > 3 else instance_name
                     if lead_dir != instance_name:
                         logging.info("%s: сообщение от %s проигнорировано (лид в базе как direction=%s)", instance_name.upper(), phone, lead_dir)
                         print(f"[CRM] {instance_name.upper()}: сообщение от {phone} проигнорировано (лид уже в базе как {lead_dir})")
                         await _wa_delete(delete_url + "/" + str(rid))
                         continue
-                    execute_query("UPDATE leads SET last_touch = ? WHERE phone = ?", (datetime.now().strftime("%Y-%m-%d %H:%M"), phone))
+                    execute_query("UPDATE leads SET last_touch = ? WHERE phone = ? AND (direction = ? OR direction IS NULL)", (datetime.now().strftime("%Y-%m-%d %H:%M"), phone, instance_name))
                     is_active = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (mgr_id,), fetchone=True)
                     if not is_active or is_active[1] != instance_name:
                         # Менеджера нет или сфера не та — пробуем назначить свободного
@@ -806,19 +811,19 @@ async def _process_wa_instance(instance_name, base_url, instance_id, token):
                         target = get_free_manager_for_direction(instance_name)
                         if target:
                             execute_query("UPDATE users SET is_busy=1 WHERE user_id=?", (target,))
-                            execute_query("UPDATE leads SET manager_id = ?, status = 'active' WHERE phone = ?", (target, phone))
+                            execute_query("UPDATE leads SET manager_id = ?, status = 'active' WHERE phone = ? AND (direction = ? OR direction IS NULL)", (target, phone, instance_name))
                             mgr_id = target
                             logging.info("%s: лид %s переназначен свободному менеджеру %s", instance_name.upper(), phone, target)
                             print(f"[CRM] {instance_name.upper()}: лид {phone} переназначен менеджеру {target}")
                         else:
-                            execute_query("UPDATE leads SET manager_id = NULL, status = 'pending' WHERE phone = ?", (phone,))
+                            execute_query("UPDATE leads SET manager_id = NULL, status = 'pending' WHERE phone = ? AND (direction = ? OR direction IS NULL)", (phone, instance_name))
                             await _wa_delete(delete_url + "/" + str(rid))
                             processed_this_cycle += 1
                             continue
                     # Если менеджер сейчас в диалоге с ДРУГИМ клиентом — этот лид не перебиваем: в очередь, сообщение не пересылаем.
                     session = execute_query("SELECT phone FROM chat_sessions WHERE user_id = ?", (mgr_id,), fetchone=True)
                     if session and session[0] != phone:
-                        execute_query("UPDATE leads SET manager_id = NULL, status = 'pending' WHERE phone = ?", (phone,))
+                        execute_query("UPDATE leads SET manager_id = NULL, status = 'pending' WHERE phone = ? AND (direction = ? OR direction IS NULL)", (phone, instance_name))
                         execute_query("DELETE FROM chat_sessions WHERE user_id = ? AND phone = ?", (mgr_id, phone))
                         await _wa_delete(delete_url + "/" + str(rid))
                         processed_this_cycle += 1
@@ -3589,6 +3594,18 @@ async def main():
     global g_http_session
     g_http_session = aiohttp.ClientSession()
     init_db()
+    # Проверка: под каким ботом запущено (чтобы не перепутать токен с другим ботом, например @AIBUTTNUDEBOT)
+    try:
+        me = await bot.get_me()
+        bot_info = f"@{me.username} (id={me.id})"
+        log.info("[CRM] Bot running as %s", bot_info)
+        print(f"[CRM] Bot running as {bot_info}")
+        if EXPECTED_BOT_USERNAME and me.username != EXPECTED_BOT_USERNAME:
+            msg = f"[CRM] ВНИМАНИЕ: ожидался @{EXPECTED_BOT_USERNAME}, запущен {bot_info}. Проверьте API_TOKEN (переменные окружения)."
+            log.warning(msg)
+            print(msg)
+    except Exception as e:
+        log.warning("[CRM] Не удалось получить get_me: %s", e)
     med_mgrs = execute_query("SELECT user_id, fio, sphere FROM users WHERE LOWER(role)='manager' AND sphere = 'med'", fetchall=True)
     msg = f"[CRM] Med managers (получают лиды с мед. WA): {med_mgrs if med_mgrs else 'НЕТ — добавьте менеджера через заявку и кнопку МЕДИЦИНА'}"
     logging.info("%s", msg)
