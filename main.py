@@ -220,7 +220,10 @@ async def try_assign_queued_lead_to_manager(manager_id: int, direction: str):
         return
     phone, name = row[0], row[1] or row[0]
     # Атомарно занять лид: только если он всё ещё pending (иначе другой менеджер уже взял)
-    execute_query("UPDATE leads SET manager_id = ?, status = 'active' WHERE phone = ? AND status = 'pending'", (manager_id, phone))
+    if direction == 'med':
+        execute_query("UPDATE leads SET manager_id = ?, status = 'active' WHERE phone = ? AND status = 'pending' AND direction = 'med'", (manager_id, phone))
+    else:
+        execute_query("UPDATE leads SET manager_id = ?, status = 'active' WHERE phone = ? AND status = 'pending' AND (direction = 'biz' OR direction IS NULL)", (manager_id, phone))
     check = execute_query("SELECT manager_id FROM leads WHERE phone = ?", (phone,), fetchone=True)
     if not check or check[0] != manager_id:
         logging.info("[CRM] try_assign: лид %s уже взят другим менеджером, пропуск для %s", phone, manager_id)
@@ -232,11 +235,15 @@ async def try_assign_queued_lead_to_manager(manager_id: int, direction: str):
         logging.info("[CRM] try_assign: лид %s назначен менеджеру %s (direction=%s)", phone, manager_id, direction)
     except Exception as e:
         logging.exception("[CRM] try_assign: не удалось отправить лид менеджеру %s: %s", manager_id, e)
-        execute_query("UPDATE leads SET manager_id = NULL, status = 'pending' WHERE phone = ?", (phone,))
+        if direction == 'med':
+            execute_query("UPDATE leads SET manager_id = NULL, status = 'pending' WHERE phone = ? AND direction = 'med'", (phone,))
+        else:
+            execute_query("UPDATE leads SET manager_id = NULL, status = 'pending' WHERE phone = ? AND (direction = 'biz' OR direction IS NULL)", (phone,))
         execute_query("UPDATE users SET is_busy = 0 WHERE user_id = ?", (manager_id,))
 
 async def distribute_pending_biz_leads() -> int:
-    """Распределить все pending-лиды бизнеса по свободным менеджерам. Возвращает число назначенных."""
+    """Распределить все pending-лиды бизнеса по свободным менеджерам. Возвращает число назначенных.
+    Атомарность: после UPDATE проверяем, что лид достался именно нам (иначе другой процесс уже назначил — не шлём дубль)."""
     cond = BIZ_LEAD_COND
     assigned = 0
     while True:
@@ -253,7 +260,14 @@ async def distribute_pending_biz_leads() -> int:
             logging.info("[CRM] distribute_pending_biz: свободных менеджеров нет, осталось в очереди")
             break
         now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        execute_query("UPDATE leads SET manager_id = ?, status = 'active', last_touch = ? WHERE phone = ?", (target, now_iso, phone))
+        execute_query(
+            "UPDATE leads SET manager_id = ?, status = 'active', last_touch = ? WHERE phone = ? AND status = 'pending' AND (direction = 'biz' OR direction IS NULL)",
+            (target, now_iso, phone),
+        )
+        check = execute_query("SELECT manager_id FROM leads WHERE phone = ?", (phone,), fetchone=True)
+        if not check or check[0] != target:
+            logging.info("[CRM] distribute_pending_biz: лид %s уже взят другим менеджером, пропуск", phone)
+            continue
         execute_query("UPDATE users SET is_busy = 1 WHERE user_id = ?", (target,))
         kb = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone[:30]}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone[:30]}").adjust(2).as_markup()
         try:
@@ -262,7 +276,7 @@ async def distribute_pending_biz_leads() -> int:
             logging.info("[CRM] distribute_pending_biz: лид %s -> менеджер %s", phone, target)
         except Exception as e:
             logging.exception("[CRM] distribute_pending_biz: отправка менеджеру %s: %s", target, e)
-            execute_query("UPDATE leads SET manager_id = NULL, status = 'pending' WHERE phone = ?", (phone,))
+            execute_query("UPDATE leads SET manager_id = NULL, status = 'pending' WHERE phone = ? AND (direction = 'biz' OR direction IS NULL)", (phone,))
             execute_query("UPDATE users SET is_busy = 0 WHERE user_id = ?", (target,))
             break
     return assigned
@@ -908,7 +922,27 @@ async def _process_wa_instance(instance_name, base_url, instance_id, token):
                         await _wa_post(send_msg_url, {"chatId": chat_id, "message": msg})
                         execute_query("INSERT OR REPLACE INTO auth_queue (phone, step, instance_sphere) VALUES (?, 1, ?)", (phone, instance_name))
                     elif q[0] == 1 and (q[1] or instance_name) == instance_name:
-                        # Второе сообщение (имя) — создаём лид (med и biz)
+                        # Второе сообщение (имя) — создаём лид (med и biz). Перед созданием перепроверяем: лид мог уже появиться (гонка).
+                        recheck = execute_query(
+                            "SELECT manager_id, name FROM leads WHERE phone = ? AND (direction = ? OR direction IS NULL)",
+                            (phone, instance_name),
+                            fetchone=True,
+                        )
+                        if recheck:
+                            mgr_id_r, c_name_r = recheck[0], recheck[1] or phone
+                            execute_query("DELETE FROM auth_queue WHERE phone = ?", (phone,))
+                            execute_query("UPDATE leads SET last_touch = ? WHERE phone = ? AND (direction = ? OR direction IS NULL)", (datetime.now().strftime("%Y-%m-%d %H:%M"), phone, instance_name))
+                            txt_r = _extract_wa_text(body) if not body.get('messageData', {}).get('fileMessageData') else '[Файл/голос]'
+                            kb_r = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone[:30]}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone[:30]}").adjust(2).as_markup()
+                            try:
+                                await bot.send_message(mgr_id_r, f"💬 <b>{c_name_r}</b> ({phone}):\n{txt_r}", reply_markup=kb_r, parse_mode="HTML")
+                            except Exception:
+                                pass
+                            log_lead_event(phone, "incoming", txt_r[:200])
+                            await _wa_delete(delete_url + "/" + str(rid))
+                            processed_this_cycle += 1
+                            await asyncio.sleep(0)
+                            continue
                         logging.info("%s: второе сообщение (имя) от %s, создаём лид", instance_name.upper(), phone)
                         print(f"[CRM] {instance_name.upper()}: второе сообщение (имя) от {phone}, создаём лид")
                         c_name = _extract_wa_text(body)
@@ -970,6 +1004,17 @@ async def _on_telegram_lead_message(peer_id: int, name: str, text: str, has_medi
     if not row:
         target = get_free_manager_for_direction('biz')
         if target:
+            recheck = execute_query("SELECT manager_id FROM leads WHERE phone = ?", (phone,), fetchone=True)
+            if recheck:
+                mgr_id_r = recheck[0]
+                kb_r = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone[:30]}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone[:30]}").adjust(2).as_markup()
+                try:
+                    await bot.send_message(mgr_id_r, f"💬 <b>{name}</b> (Telegram):\n{text}", reply_markup=kb_r, parse_mode="HTML")
+                except Exception:
+                    pass
+                execute_query("UPDATE leads SET last_touch = ? WHERE phone = ?", (now_iso, phone))
+                log_lead_event(phone, "incoming", (text or "[медиа]")[:200], None)
+                return
             execute_query("UPDATE users SET is_busy=1 WHERE user_id=?", (target,))
             execute_query(
                 "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at, source) VALUES (?, ?, 'active', ?, ?, 1, 'biz', ?, 'Telegram')",
