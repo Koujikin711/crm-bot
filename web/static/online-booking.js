@@ -254,10 +254,12 @@ function renderScheduler() {
     block.style.height = `${h}px`;
     block.addEventListener("dragstart", () => {
       state.dragApptId = Number(block.dataset.apptId);
-      block.style.opacity = "0.6";
+      block.classList.add("appt-dragging");
+      block.style.opacity = "0.88";
     });
     block.addEventListener("dragend", () => {
       state.dragApptId = null;
+      block.classList.remove("appt-dragging");
       block.style.opacity = "1";
     });
     block.addEventListener("dblclick", async () => {

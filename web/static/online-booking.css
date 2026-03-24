@@ -1,6 +1,27 @@
-.booking-root {
+/* Фон страницы в духе Bitrix24: мягкий градиент + «карточки» */
+.content.booking-root {
   display: grid;
   gap: 14px;
+  background:
+    radial-gradient(ellipse 120% 80% at 10% 0%, rgba(47, 198, 246, 0.12) 0%, transparent 55%),
+    radial-gradient(ellipse 90% 60% at 100% 20%, rgba(32, 102, 176, 0.08) 0%, transparent 50%),
+    linear-gradient(165deg, #d8e3ed 0%, #cfd9e6 40%, #dce5ee 100%);
+  margin-left: 200px;
+  min-height: 100vh;
+  padding: 1.1rem 1.35rem 1.5rem;
+  box-sizing: border-box;
+}
+
+.content.booking-root .panel {
+  background: rgba(255, 255, 255, 0.94);
+  border: 1px solid rgba(255, 255, 255, 0.75);
+  border-radius: 12px;
+  box-shadow:
+    0 4px 20px rgba(46, 80, 110, 0.08),
+    0 1px 3px rgba(0, 0, 0, 0.04);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  padding: 14px 16px;
 }
 
 .panel {
@@ -41,11 +62,12 @@
 }
 
 .chip {
-  background: #f4f6fa;
-  border: 1px solid #e4e8f0;
+  background: linear-gradient(180deg, #f7fafd 0%, #eef3f8 100%);
+  border: 1px solid #d2dce6;
   border-radius: 999px;
   padding: 4px 10px;
   font-size: 12px;
+  color: #3d4f62;
 }
 
 .booking-main {
@@ -68,11 +90,14 @@
 }
 
 #scheduler-wrap {
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
+  position: relative;
+  isolation: isolate;
+  border: 1px solid #c8d4e0;
+  border-radius: 10px;
   overflow: auto;
   height: 68vh;
-  background: #fff;
+  background: linear-gradient(180deg, #fafcfe 0%, #f2f6fa 55%, #eef3f8 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.9);
 }
 
 .sched-grid {
@@ -84,50 +109,76 @@
   grid-template-columns: 70px repeat(var(--spec-count), minmax(200px, 1fr));
   position: sticky;
   top: 0;
-  z-index: 2;
-  background: linear-gradient(180deg, #e9f4fb 0%, #e2eaf2 100%);
-  border-bottom: 2px solid #c5d4e3;
+  z-index: 30;
+  background: linear-gradient(180deg, #d8e6f2 0%, #cad8e6 100%);
+  border-bottom: 2px solid #a8b8ca;
+  box-shadow: 0 3px 10px rgba(40, 60, 80, 0.08);
 }
 
 .sched-head div {
   padding: 8px;
-  border-right: 1px solid #d5dee8;
+  border-right: 1px solid #b8c6d6;
   font-weight: 600;
   font-size: 13px;
   color: #2e3f52;
+  background: transparent;
 }
 
 .sched-head div:first-child {
-  color: #5a6d82;
-  font-weight: 500;
+  position: sticky;
+  left: 0;
+  z-index: 35;
+  color: #4a5d70;
+  font-weight: 600;
+  background: linear-gradient(180deg, #d8e6f2 0%, #cad8e6 100%);
+  box-shadow: 2px 0 6px rgba(0, 0, 0, 0.05);
 }
 
 .sched-body {
   display: grid;
   grid-template-columns: 70px repeat(var(--spec-count), minmax(200px, 1fr));
+  /* Абсолютные карточки не увеличивают высоту ряда — запас внизу, чтобы не «вылезали» за сетку */
+  padding-bottom: 120px;
 }
 
 .time-cell {
-  border-right: 1px solid #eef2f7;
-  border-bottom: 1px solid #f1f5f9;
+  position: sticky;
+  left: 0;
+  z-index: 15;
+  border-right: 1px solid #dce4ee;
+  border-bottom: 1px solid #e2e8f0;
   font-size: 12px;
-  color: #64748b;
+  color: #5a6d82;
   padding: 6px;
-  background: #fafbff;
+  background: linear-gradient(90deg, #eef3f8 0%, #f4f7fb 100%);
+  box-shadow: 1px 0 0 rgba(180, 195, 212, 0.6);
 }
 
 .slot {
   position: relative;
   min-height: 34px;
-  border-right: 1px solid #eef2f7;
-  border-bottom: 1px solid #f1f5f9;
-  background: #fff;
+  border-right: 1px solid #e2e8f0;
+  border-bottom: 1px solid #e8edf3;
+  background: rgba(255, 255, 255, 0.65);
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.slot:hover {
+  background: #f0f7fd;
 }
 
 .slot.hover {
-  background: #eef7ff;
+  background: #e3f2fd;
 }
 
+.slot.slot-picked {
+  box-shadow: inset 0 0 0 2px #2fc6f6;
+  background: #e8f7fd !important;
+  z-index: 2;
+}
+
+/* Карточки ниже шапки и колонки «Время», иначе при скролле «лезут» поверх линий */
 .appt {
   position: absolute;
   left: 6px;
@@ -138,8 +189,15 @@
   color: #fff;
   font-size: 12px;
   cursor: grab;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
-  z-index: 3;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+  z-index: 1;
+  max-width: calc(100% - 12px);
+}
+
+.appt.appt-dragging {
+  z-index: 50;
+  cursor: grabbing;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
 }
 
 .appt.booked { background: linear-gradient(135deg, #2fc6f6 0%, #1e9fd8 100%); }
@@ -159,11 +217,12 @@
 
 .queue-item {
   text-align: left;
-  border: 1px solid #e5e7eb;
-  border-radius: 8px;
-  background: #f8fafc;
+  border: 1px solid #d2dce6;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #ffffff 0%, #f5f8fc 100%);
   padding: 8px;
   cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
 }
 
 .toolbar {
@@ -216,12 +275,13 @@ button {
   border-radius: 8px;
   padding: 8px 12px;
   cursor: pointer;
-  background: #2563eb;
+  background: linear-gradient(180deg, #2fc6f6 0%, #1e9fd8 100%);
   color: #fff;
+  box-shadow: 0 2px 6px rgba(30, 159, 216, 0.35);
 }
 
 button:hover {
-  background: #1e4fd1;
+  background: linear-gradient(180deg, #3dcef8 0%, #22a8e0 100%);
 }
 
 .hint {
@@ -244,5 +304,12 @@ button:hover {
 @media (max-width: 1300px) {
   .booking-main {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 768px) {
+  .content.booking-root {
+    margin-left: 72px;
+    padding: 0.75rem 0.65rem;
   }
 }
