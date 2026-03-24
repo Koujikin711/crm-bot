@@ -32,6 +32,7 @@ app.config["SESSION_COOKIE_SAMESITE"] = "Lax"
 app.config["SESSION_COOKIE_HTTPONLY"] = True
 
 BOT_USERNAME = os.environ.get("BOT_USERNAME", "MetodiCRM_bot")
+WEB_ALLOW_DEV_LOGIN = os.environ.get("WEB_ALLOW_DEV_LOGIN", "1").strip().lower() in ("1", "true", "yes", "on")
 
 
 def _get_config():
@@ -196,8 +197,9 @@ def login():
         return redirect(url_for("dashboard"))
     auth_url = request.host_url.rstrip("/") + url_for("auth_telegram")
     is_local = "localhost" in (request.host or "") or "127.0.0.1" in (request.host or "")
+    show_dev_login = is_local or WEB_ALLOW_DEV_LOGIN
     users = []
-    if is_local:
+    if show_dev_login:
         rows = execute_query(
             "SELECT user_id, COALESCE(fio,''), role, COALESCE(sphere,'') FROM users ORDER BY role, user_id",
             (),
@@ -205,13 +207,13 @@ def login():
         )
         users = [{"user_id": r[0], "fio": r[1] or f"ID{r[0]}", "role": r[2], "sphere": r[3]} for r in (rows or [])]
     return render_template(
-        "login.html", bot_username=BOT_USERNAME, auth_url=auth_url, dev_users=users, is_local=is_local
+        "login.html", bot_username=BOT_USERNAME, auth_url=auth_url, dev_users=users, is_local=show_dev_login
     )
 
 
 @app.route("/auth/dev", methods=["POST"])
 def auth_dev():
-    if "localhost" not in (request.host or "") and "127.0.0.1" not in (request.host or ""):
+    if not WEB_ALLOW_DEV_LOGIN and "localhost" not in (request.host or "") and "127.0.0.1" not in (request.host or ""):
         return redirect(url_for("login") + "?error=invalid")
     user_id = request.form.get("user_id")
     if not user_id:
