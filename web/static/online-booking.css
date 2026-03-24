@@ -1,7 +1,6 @@
-.booking-layout {
+.booking-root {
   display: grid;
-  grid-template-columns: 300px 1fr 360px;
-  gap: 16px;
+  gap: 14px;
 }
 
 .panel {
@@ -11,9 +10,154 @@
   padding: 14px;
 }
 
-.panel h2 {
+.panel h2,
+.panel h3 {
   margin: 0 0 10px;
-  font-size: 18px;
+  font-size: 16px;
+}
+
+.booking-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+}
+
+.booking-header h1 {
+  margin: 0;
+  font-size: 22px;
+}
+
+.booking-header .right {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.chips {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.chip {
+  background: #f4f6fa;
+  border: 1px solid #e4e8f0;
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.booking-main {
+  display: grid;
+  grid-template-columns: 1fr 330px;
+  gap: 14px;
+  min-height: 75vh;
+}
+
+.scheduler-panel {
+  display: grid;
+  gap: 8px;
+}
+
+.scheduler-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+}
+
+#scheduler-wrap {
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  overflow: auto;
+  height: 68vh;
+  background: #fff;
+}
+
+.sched-grid {
+  min-width: 940px;
+}
+
+.sched-head {
+  display: grid;
+  grid-template-columns: 70px repeat(var(--spec-count), minmax(200px, 1fr));
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #f8fafc;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.sched-head div {
+  padding: 8px;
+  border-right: 1px solid #eef2f7;
+  font-weight: 600;
+  font-size: 13px;
+}
+
+.sched-body {
+  display: grid;
+  grid-template-columns: 70px repeat(var(--spec-count), minmax(200px, 1fr));
+}
+
+.time-cell {
+  border-right: 1px solid #eef2f7;
+  border-bottom: 1px solid #f1f5f9;
+  font-size: 12px;
+  color: #64748b;
+  padding: 6px;
+  background: #fafbff;
+}
+
+.slot {
+  position: relative;
+  min-height: 34px;
+  border-right: 1px solid #eef2f7;
+  border-bottom: 1px solid #f1f5f9;
+  background: #fff;
+}
+
+.slot.hover {
+  background: #eef7ff;
+}
+
+.appt {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  top: 4px;
+  border-radius: 8px;
+  padding: 6px 8px;
+  color: #fff;
+  font-size: 12px;
+  cursor: grab;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.2);
+  z-index: 3;
+}
+
+.appt.booked { background: #2d8cff; }
+.appt.completed { background: #22a06b; }
+.appt.cancelled { background: #9aa0aa; }
+.appt.no_show { background: #d64545; }
+
+.appt .title { font-weight: 700; display: block; }
+.appt .meta { opacity: 0.95; font-size: 11px; }
+
+.queue-list {
+  display: grid;
+  gap: 8px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.queue-item {
+  text-align: left;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #f8fafc;
+  padding: 8px;
+  cursor: pointer;
 }
 
 .toolbar {
@@ -74,13 +218,6 @@ button:hover {
   background: #1e4fd1;
 }
 
-.inline-form {
-  display: grid;
-  grid-template-columns: 1fr 120px auto;
-  gap: 8px;
-  margin-bottom: 10px;
-}
-
 .hint {
   color: #666;
   font-size: 13px;
@@ -99,7 +236,7 @@ button:hover {
 }
 
 @media (max-width: 1300px) {
-  .booking-layout {
+  .booking-main {
     grid-template-columns: 1fr;
   }
 }

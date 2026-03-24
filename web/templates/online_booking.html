@@ -27,53 +27,74 @@
     </nav>
   </aside>
 
-  <main class="content booking-layout">
-    <section class="panel queue-panel">
-      <h2>Ожидают записи</h2>
-      <input id="queue-search" type="text" placeholder="Поиск по имени/телефону">
-      <div id="queue-list" class="list"></div>
-    </section>
-
-    <section class="panel calendar-panel">
-      <div class="toolbar">
+  <main class="content booking-root">
+    <section class="panel booking-header">
+      <div class="left">
+        <h1>Онлайн-запись</h1>
+        <div class="chips">
+          <span class="chip">Ожидают записи: <b id="chip-waiting">0</b></span>
+          <span class="chip">Сегодня записано: <b id="chip-booked">0</b></span>
+          <span class="chip">Опаздывают: <b id="chip-late">0</b></span>
+        </div>
+      </div>
+      <div class="right">
         <label>Дата: <input id="date-filter" type="date"></label>
-        <label>Специалист:
-          <select id="specialist-filter"></select>
+        <label>Режим:
+          <select id="view-mode">
+            <option value="day">День</option>
+            <option value="week">Неделя</option>
+          </select>
         </label>
         <button id="refresh-btn">Обновить</button>
       </div>
-      <h2>Календарь записей</h2>
-      <div id="appointments-list" class="list"></div>
     </section>
 
-    <section class="panel form-panel">
-      <h2>Создать запись</h2>
-      <form id="booking-form">
-        <input type="hidden" id="lead_phone">
-        <label>Пациент
-          <input id="patient_name" required>
-        </label>
-        <label>Телефон
-          <input id="patient_phone" required>
-        </label>
-        <label>Направление
-          <select id="direction_id" required></select>
-        </label>
-        <label>Специалист
-          <select id="specialist_id" required></select>
-        </label>
-        <label>Дата и время
-          <input id="start_at" type="datetime-local" required>
-        </label>
-        <label>ID ответственного менеджера
-          <input id="responsible_manager_id" type="number">
-        </label>
-        <label>Комментарий
-          <textarea id="comment" rows="3"></textarea>
-        </label>
-        <button type="submit">Записать пациента</button>
-      </form>
-      <p id="form-msg" class="hint"></p>
+    <section class="booking-main">
+      <div class="panel scheduler-panel">
+        <div class="scheduler-toolbar">
+          <label>Фильтр специалиста:
+            <select id="specialist-filter"></select>
+          </label>
+          <small>Перетаскивай карточки между слотами/специалистами</small>
+        </div>
+        <div id="scheduler-wrap"></div>
+      </div>
+
+      <aside class="panel right-panel">
+        <h3>Календарь</h3>
+        <input id="mini-calendar" type="date">
+        <h3>Лист ожидания</h3>
+        <input id="queue-search" type="text" placeholder="Поиск по имени/телефону">
+        <div id="queue-list" class="queue-list"></div>
+        <hr>
+        <h3>Быстрая запись</h3>
+        <form id="booking-form">
+          <input type="hidden" id="lead_phone">
+          <label>Пациент
+            <input id="patient_name" required>
+          </label>
+          <label>Телефон
+            <input id="patient_phone" required>
+          </label>
+          <label>Направление
+            <select id="direction_id" required></select>
+          </label>
+          <label>Специалист
+            <select id="specialist_id" required></select>
+          </label>
+          <label>Дата и время
+            <input id="start_at" type="datetime-local" required>
+          </label>
+          <label>ID ответственного менеджера
+            <input id="responsible_manager_id" type="number">
+          </label>
+          <label>Комментарий
+            <textarea id="comment" rows="2"></textarea>
+          </label>
+          <button type="submit">Записать пациента</button>
+        </form>
+        <p id="form-msg" class="hint"></p>
+      </aside>
     </section>
   </main>
 

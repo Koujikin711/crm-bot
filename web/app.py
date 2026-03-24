@@ -505,6 +505,52 @@ def api_booking_create_appointment():
     return jsonify({"ok": True}), 201
 
 
+@app.patch("/web-api/booking/appointments/<int:appointment_id>")
+@login_required
+@booking_access_required
+def api_booking_move_appointment(appointment_id):
+    body = request.get_json(silent=True) or {}
+    start_at = str(body.get("start_at", "")).strip()
+    specialist_id = int(body.get("specialist_id") or 0)
+    if not start_at or not specialist_id:
+        return jsonify({"detail": "start_at and specialist_id are required"}), 400
+    row = execute_query(
+        "SELECT direction_id FROM medical_appointments WHERE id = ?",
+        (appointment_id,),
+        fetchone=True,
+    )
+    if not row:
+        return jsonify({"detail": "Appointment not found"}), 404
+    direction_id = int(row[0])
+    direction = execute_query(
+        "SELECT duration_min FROM medical_directions WHERE id = ?",
+        (direction_id,),
+        fetchone=True,
+    )
+    if not direction:
+        return jsonify({"detail": "Direction not found"}), 404
+    duration_min = int(direction[0] or 30)
+    dt_start = _parse_dt(start_at)
+    dt_end = dt_start.replace(second=0, microsecond=0)
+    dt_end = dt_end.timestamp() + duration_min * 60
+    end_at = datetime.fromtimestamp(dt_end).strftime("%Y-%m-%d %H:%M")
+    overlap = execute_query(
+        """SELECT 1 FROM medical_appointments
+           WHERE specialist_id = ? AND status = 'booked' AND id != ?
+             AND NOT (end_at <= ? OR start_at >= ?)
+           LIMIT 1""",
+        (specialist_id, appointment_id, start_at, end_at),
+        fetchone=True,
+    )
+    if overlap:
+        return jsonify({"detail": "Slot already occupied"}), 409
+    execute_query(
+        "UPDATE medical_appointments SET specialist_id = ?, start_at = ?, end_at = ?, updated_at = ? WHERE id = ?",
+        (specialist_id, start_at, end_at, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), appointment_id),
+    )
+    return jsonify({"ok": True})
+
+
 @app.patch("/web-api/booking/appointments/<int:appointment_id>/status")
 @login_required
 @booking_access_required
