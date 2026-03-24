@@ -411,7 +411,7 @@ def api_booking_appointments():
     date_s = request.args.get("date", "").strip()
     specialist_id = request.args.get("specialist_id", "").strip()
     q = """SELECT a.id, a.patient_name, a.patient_phone, a.start_at, a.end_at, a.status,
-                  a.responsible_manager_id, d.name, s.full_name, a.comment
+                  a.specialist_id, a.responsible_manager_id, d.name, s.full_name, a.comment
            FROM medical_appointments a
            LEFT JOIN medical_directions d ON d.id = a.direction_id
            LEFT JOIN medical_specialists s ON s.id = a.specialist_id
@@ -434,10 +434,11 @@ def api_booking_appointments():
                 "start_at": r[3],
                 "end_at": r[4],
                 "status": r[5],
-                "responsible_manager_id": r[6],
-                "direction_name": r[7],
-                "specialist_name": r[8],
-                "comment": r[9],
+                "specialist_id": r[6],
+                "responsible_manager_id": r[7],
+                "direction_name": r[8],
+                "specialist_name": r[9],
+                "comment": r[10],
             }
             for r in (rows or [])
         ]

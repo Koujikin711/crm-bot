@@ -31,10 +31,20 @@ function setMsg(text, ok = true) {
   el.className = `hint ${ok ? "ok" : "err"}`;
 }
 
+/** Единый формат для сопоставления слота в сетке и start_at из API (с секундами или без). */
+function normalizeSlotDt(text) {
+  if (!text) return "";
+  const s = String(text).trim();
+  if (s.length >= 16) return s.slice(0, 16);
+  return s;
+}
+
 function parseDT(text) {
   const [d, t] = text.split(" ");
   const [y, m, day] = d.split("-").map(Number);
-  const [hh, mm] = t.split(":").map(Number);
+  const parts = (t || "00:00").split(":");
+  const hh = Number(parts[0]);
+  const mm = Number(parts[1] || 0);
   return new Date(y, m - 1, day, hh, mm, 0);
 }
 
@@ -174,11 +184,12 @@ function renderScheduler() {
   rows.forEach((time) => {
     body.insertAdjacentHTML("beforeend", `<div class="time-cell">${time}</div>`);
     resources.forEach((r) => {
-      const dt = `${r.date} ${time}`;
+      const dt = normalizeSlotDt(`${r.date} ${time}`);
       const slot = document.createElement("div");
       slot.className = "slot";
       slot.dataset.specialistId = String(r.specialist.id);
       slot.dataset.startAt = dt;
+      slot.title = "Клик — выбрать слот для записи";
       slot.addEventListener("dragover", (e) => {
         e.preventDefault();
         slot.classList.add("hover");
@@ -203,6 +214,22 @@ function renderScheduler() {
           setMsg(err.message, false);
         }
       });
+      slot.addEventListener("click", (e) => {
+        if (e.target.closest(".appt")) return;
+        document.querySelectorAll(".slot.slot-picked").forEach((el) => el.classList.remove("slot-picked"));
+        slot.classList.add("slot-picked");
+        const sid = Number(slot.dataset.specialistId);
+        document.getElementById("specialist_id").value = String(sid);
+        const spec = state.specialists.find((x) => Number(x.id) === sid);
+        if (spec && spec.direction_id) {
+          document.getElementById("direction_id").value = String(spec.direction_id);
+        }
+        const raw = slot.dataset.startAt;
+        const [datePart, timePart] = raw.split(" ");
+        document.getElementById("start_at").value = `${datePart}T${timePart}`;
+        setMsg("Слот выбран — укажите пациента и нажмите «Записать пациента»", true);
+        document.getElementById("patient_name").focus();
+      });
       body.appendChild(slot);
     });
   });
@@ -211,9 +238,9 @@ function renderScheduler() {
   wrap.appendChild(grid);
 
   for (const appt of state.appointments) {
-    const slot = wrap.querySelector(
-      `.slot[data-specialist-id="${appt.specialist_id || ""}"][data-start-at="${appt.start_at}"]`
-    );
+    const startKey = normalizeSlotDt(appt.start_at);
+    const sid = appt.specialist_id != null ? String(appt.specialist_id) : "";
+    const slot = wrap.querySelector(`.slot[data-specialist-id="${sid}"][data-start-at="${startKey}"]`);
     if (!slot) continue;
     const block = document.createElement("div");
     block.className = `appt ${appt.status}`;
