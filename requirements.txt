@@ -8,3 +8,4 @@ uvicorn[standard]
 telethon
 gspread
 google-auth
+Flask>=3.0
