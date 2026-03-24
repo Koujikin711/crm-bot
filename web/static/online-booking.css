@@ -601,10 +601,6 @@ button:hover {
   color: #b71c1c;
 }
 
-.nav-item.active {
-  background: rgba(255, 255, 255, 0.16);
-}
-
 @media (max-width: 1300px) {
   .booking-main {
     grid-template-columns: 1fr;

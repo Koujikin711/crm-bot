@@ -13,17 +13,28 @@ body {
   top: 0;
   bottom: 0;
   width: 200px;
-  background: linear-gradient(180deg, #2c3d4f 0%, #243342 100%);
-  color: #ecf0f1;
+  /* Яркий градиент в духе Bitrix24: сине-бирюзовый + лёгкое «свечение» */
+  background:
+    radial-gradient(ellipse 130% 100% at 0% -15%, rgba(47, 198, 246, 0.42) 0%, transparent 55%),
+    radial-gradient(ellipse 90% 70% at 100% 20%, rgba(139, 92, 246, 0.14) 0%, transparent 50%),
+    linear-gradient(
+      165deg,
+      #153a5c 0%,
+      #1a5a9e 22%,
+      #2066b0 45%,
+      #2b8cc0 68%,
+      #1a6fad 100%
+    );
+  color: #f4f8fc;
   display: flex;
   flex-direction: column;
   z-index: 100;
-  box-shadow: 2px 0 14px rgba(0,0,0,0.12);
+  box-shadow: 4px 0 24px rgba(15, 45, 80, 0.22);
 }
 
 .sidebar-header {
   padding: 0.75rem 0.9rem;
-  border-bottom: 1px solid rgba(255,255,255,0.1);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -35,7 +46,7 @@ body {
 }
 
 .logout {
-  color: #bdc3c7;
+  color: rgba(255, 255, 255, 0.72);
   text-decoration: none;
   font-size: 0.85rem;
 }
@@ -43,11 +54,11 @@ body {
 
 .user-info {
   padding: 0.75rem 0.9rem;
-  border-bottom: 1px solid rgba(255,255,255,0.1);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.14);
   font-size: 0.82rem;
 }
 .user-info strong { display: block; margin-bottom: 0.25rem; }
-.user-info .role { color: #95a5a6; font-size: 0.8rem; }
+.user-info .role { color: rgba(200, 230, 255, 0.75); font-size: 0.8rem; }
 
 .sidebar-nav {
   flex: 1;
@@ -65,8 +76,14 @@ body {
   transition: background 0.15s;
 }
 .nav-item:hover {
-  background: rgba(255,255,255,0.08);
+  background: rgba(255, 255, 255, 0.12);
 }
+
+.nav-item.active {
+  background: rgba(255, 255, 255, 0.16);
+  box-shadow: inset 3px 0 0 #2fc6f6;
+}
+
 .nav-icon {
   margin-right: 0.5rem;
   font-size: 1rem;
