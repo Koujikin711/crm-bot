@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Журнал записей — {{ fio or 'CRM' }}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='sidebar.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='online-booking.css') }}">
+</head>
+<body>
+  <aside class="sidebar">
+    <div class="sidebar-header">
+      <span class="logo">Metodi CRM</span>
+      <a href="{{ url_for('logout') }}" class="logout">Выйти</a>
+    </div>
+    <div class="user-info">
+      <strong>{{ fio or 'Пользователь' }}</strong>
+      <span class="role">{{ role }} {% if sphere != '—' %}({{ sphere }}){% endif %}</span>
+    </div>
+    <nav class="sidebar-nav">
+      {% for item in menu %}
+      <a href="{{ item.href }}" class="nav-item {% if item.href == '/online-booking/journal' %}active{% endif %}">
+        <span class="nav-icon">{{ item.icon }}</span>
+        <span class="nav-text">{{ item.text }}</span>
+      </a>
+      {% endfor %}
+    </nav>
+  </aside>
+
+  <main class="content">
+    <h1>Журнал записей</h1>
+    <div class="toolbar">
+      <label>Дата: <input id="journal-date" type="date"></label>
+      <button id="journal-refresh">Обновить</button>
+    </div>
+    <div id="journal-list" class="list"></div>
+  </main>
+  <script src="{{ url_for('static', filename='online-booking-journal.js') }}"></script>
+</body>
+</html>

@@ -1,0 +1,105 @@
+.booking-layout {
+  display: grid;
+  grid-template-columns: 300px 1fr 360px;
+  gap: 16px;
+}
+
+.panel {
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
+  padding: 14px;
+}
+
+.panel h2 {
+  margin: 0 0 10px;
+  font-size: 18px;
+}
+
+.toolbar {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 70vh;
+  overflow: auto;
+}
+
+.item {
+  border: 1px solid #e6e6e6;
+  border-radius: 8px;
+  padding: 10px;
+  background: #fafafa;
+}
+
+label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+input,
+select,
+textarea,
+button {
+  font: inherit;
+}
+
+input,
+select,
+textarea {
+  border: 1px solid #d4d4d4;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+
+button {
+  border: none;
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  background: #2563eb;
+  color: #fff;
+}
+
+button:hover {
+  background: #1e4fd1;
+}
+
+.inline-form {
+  display: grid;
+  grid-template-columns: 1fr 120px auto;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.hint {
+  color: #666;
+  font-size: 13px;
+}
+
+.ok {
+  color: #136f28;
+}
+
+.err {
+  color: #b71c1c;
+}
+
+.nav-item.active {
+  background: rgba(255, 255, 255, 0.16);
+}
+
+@media (max-width: 1300px) {
+  .booking-layout {
+    grid-template-columns: 1fr;
+  }
+}
