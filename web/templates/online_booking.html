@@ -98,6 +98,75 @@
     </section>
   </main>
 
+  <div id="drawer-backdrop" class="drawer-backdrop is-hidden" aria-hidden="true"></div>
+
+  <aside id="client-drawer" class="booking-drawer is-hidden" aria-hidden="true">
+    <div class="booking-drawer-head">
+      <h2 id="cd-title">Запись</h2>
+      <button type="button" class="drawer-close" id="cd-close" aria-label="Закрыть">×</button>
+    </div>
+    <div class="booking-drawer-body" id="cd-body">
+      <p class="cd-muted" id="cd-sub"></p>
+      <dl class="cd-dl" id="cd-dl"></dl>
+      <label class="cd-status-row">Статус
+        <select id="cd-status">
+          <option value="booked">Записан</option>
+          <option value="completed">Завершён</option>
+          <option value="no_show">Не пришёл</option>
+          <option value="cancelled">Отменён</option>
+        </select>
+      </label>
+      <button type="button" class="cd-save-btn" id="cd-save-status">Сохранить статус</button>
+    </div>
+  </aside>
+
+  <aside id="spec-drawer" class="booking-drawer is-hidden" aria-hidden="true">
+    <div class="booking-drawer-head">
+      <h2>Новый врач / ресурс</h2>
+      <button type="button" class="drawer-close" id="sd-close" aria-label="Закрыть">×</button>
+    </div>
+    <form id="form-add-spec" class="booking-drawer-body">
+      <label>ФИО врача
+        <input name="full_name" required placeholder="Иванов Иван Иванович">
+      </label>
+      <label>Специальность (подпись в колонке)
+        <input name="specialty_label" placeholder="Невролог">
+      </label>
+      <label>Направление / услуга (из справочника)
+        <select name="direction_id" id="sd-direction_id" required></select>
+      </label>
+      <label>Телефон
+        <input name="phone" type="tel" placeholder="+7…">
+      </label>
+      <label>График (текст для карточки)
+        <textarea name="work_schedule_note" rows="2" placeholder="Пн–Пт, обед 13–14"></textarea>
+      </label>
+      <div class="sd-row2">
+        <label>С
+          <input name="work_time_from" type="time" value="09:00">
+        </label>
+        <label>До
+          <input name="work_time_to" type="time" value="18:00">
+        </label>
+        <label>Длительность приёма (мин)
+          <input name="default_duration_min" type="number" min="5" step="5" placeholder="из направления">
+        </label>
+      </div>
+      <fieldset class="sd-days">
+        <legend>Рабочие дни</legend>
+        <label><input type="checkbox" name="wd" value="1" checked> Пн</label>
+        <label><input type="checkbox" name="wd" value="2" checked> Вт</label>
+        <label><input type="checkbox" name="wd" value="3" checked> Ср</label>
+        <label><input type="checkbox" name="wd" value="4" checked> Чт</label>
+        <label><input type="checkbox" name="wd" value="5" checked> Пт</label>
+        <label><input type="checkbox" name="wd" value="6"> Сб</label>
+        <label><input type="checkbox" name="wd" value="7"> Вс</label>
+      </fieldset>
+      <p id="sd-msg" class="hint"></p>
+      <button type="submit">Добавить врача</button>
+    </form>
+  </aside>
+
   <script src="{{ url_for('static', filename='online-booking.js') }}"></script>
 </body>
 </html>

@@ -31,6 +31,92 @@ function setMsg(text, ok = true) {
   el.className = `hint ${ok ? "ok" : "err"}`;
 }
 
+function esc(s) {
+  const d = document.createElement("div");
+  d.textContent = s == null ? "" : String(s);
+  return d.innerHTML;
+}
+
+function specialistSubtitle(sp) {
+  return (sp.specialty_label && String(sp.specialty_label).trim()) || sp.direction_name || "—";
+}
+
+let currentAppointmentId = null;
+
+function drawerBackdrop() {
+  return document.getElementById("drawer-backdrop");
+}
+
+function closeDrawers() {
+  document.getElementById("client-drawer")?.classList.add("is-hidden");
+  document.getElementById("spec-drawer")?.classList.add("is-hidden");
+  drawerBackdrop()?.classList.add("is-hidden");
+  currentAppointmentId = null;
+}
+
+function openDrawersCommon() {
+  drawerBackdrop()?.classList.remove("is-hidden");
+}
+
+async function openClientDrawer(apptId) {
+  currentAppointmentId = apptId;
+  openDrawersCommon();
+  const panel = document.getElementById("client-drawer");
+  panel.classList.remove("is-hidden");
+  document.getElementById("spec-drawer")?.classList.add("is-hidden");
+  let a;
+  try {
+    a = await j(`/web-api/booking/appointments/${apptId}`);
+  } catch (e) {
+    setMsg(e.message, false);
+    closeDrawers();
+    return;
+  }
+  document.getElementById("cd-title").textContent = a.patient_name || "Запись";
+  const phone = a.patient_phone || "—";
+  document.getElementById("cd-sub").textContent = phone;
+  const t0 = normalizeSlotDt(a.start_at);
+  const t1 = normalizeSlotDt(a.end_at);
+  const rows = [
+    ["Время", `${t0} — ${t1}`],
+    ["Врач", a.specialist_name || "—"],
+    ["Направление", a.direction_name || "—"],
+    ["Статус", a.status || "—"],
+    ["Менеджер (ID)", a.responsible_manager_id != null ? String(a.responsible_manager_id) : "—"],
+    ["Лид (тел.)", a.lead_phone || "—"],
+    ["Комментарий", (a.comment && String(a.comment).trim()) || "—"],
+  ];
+  document.getElementById("cd-dl").innerHTML = rows
+    .map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`)
+    .join("");
+  document.getElementById("cd-status").value = a.status || "booked";
+}
+
+function openSpecDrawer() {
+  openDrawersCommon();
+  document.getElementById("client-drawer")?.classList.add("is-hidden");
+  const panel = document.getElementById("spec-drawer");
+  panel.classList.remove("is-hidden");
+  const sel = document.getElementById("sd-direction_id");
+  sel.innerHTML = state.directions
+    .map((d) => `<option value="${d.id}">${esc(d.name)} (${d.duration_min} мин)</option>`)
+    .join("");
+  document.getElementById("form-add-spec").reset();
+  document.getElementById("sd-msg").textContent = "";
+  ["1", "2", "3", "4", "5"].forEach((v) => {
+    const el = document.querySelector(`#form-add-spec input[name="wd"][value="${v}"]`);
+    if (el) el.checked = true;
+  });
+  ["6", "7"].forEach((v) => {
+    const el = document.querySelector(`#form-add-spec input[name="wd"][value="${v}"]`);
+    if (el) el.checked = false;
+  });
+  const wf = document.querySelector('#form-add-spec input[name="work_time_from"]');
+  const wt = document.querySelector('#form-add-spec input[name="work_time_to"]');
+  if (wf) wf.value = "09:00";
+  if (wt) wt.value = "18:00";
+}
+
 /** Единый формат для сопоставления слота в сетке и start_at из API (с секундами или без). */
 function normalizeSlotDt(text) {
   if (!text) return "";
@@ -170,17 +256,32 @@ function renderScheduler() {
   }
   const grid = document.createElement("div");
   grid.className = "sched-grid";
-  grid.style.setProperty("--spec-count", String(resources.length));
+  const nRes = resources.length;
+  const colTpl = `70px repeat(${nRes}, minmax(200px, 1fr)) minmax(130px, 160px)`;
+  grid.style.minWidth = `${70 + nRes * 200 + 160}px`;
+
+  const weekMode = document.getElementById("view-mode").value === "week";
 
   const head = document.createElement("div");
   head.className = "sched-head";
-  head.innerHTML = `<div>Время</div>${resources
-    .map((r) => `<div>${r.specialist.full_name}<br><small>${r.date}</small></div>`)
-    .join("")}`;
+  head.style.gridTemplateColumns = colTpl;
+  head.innerHTML =
+    `<div>Время</div>` +
+    resources
+      .map((r) => {
+        const s = r.specialist;
+        const sub = esc(specialistSubtitle(s));
+        const name = esc(s.full_name);
+        const dateLine = weekMode ? `<div class="sched-head-date">${esc(r.date)}</div>` : "";
+        return `<div class="sched-resource-head"><div class="sched-resource-name">${name}</div><div class="sched-resource-sub">${sub}</div>${dateLine}</div>`;
+      })
+      .join("") +
+    `<div class="sched-head-add"><button type="button" class="btn-add-resource" id="btn-open-spec-drawer">+ Добавить</button></div>`;
   grid.appendChild(head);
 
   const body = document.createElement("div");
   body.className = "sched-body";
+  body.style.gridTemplateColumns = colTpl;
   rows.forEach((time) => {
     body.insertAdjacentHTML("beforeend", `<div class="time-cell">${time}</div>`);
     resources.forEach((r) => {
@@ -232,10 +333,18 @@ function renderScheduler() {
       });
       body.appendChild(slot);
     });
+    const filler = document.createElement("div");
+    filler.className = "sched-filler";
+    body.appendChild(filler);
   });
   grid.appendChild(body);
   wrap.innerHTML = "";
   wrap.appendChild(grid);
+
+  document.getElementById("btn-open-spec-drawer")?.addEventListener("click", (e) => {
+    e.preventDefault();
+    openSpecDrawer();
+  });
 
   for (const appt of state.appointments) {
     const startKey = normalizeSlotDt(appt.start_at);
@@ -246,12 +355,14 @@ function renderScheduler() {
     block.className = `appt ${appt.status}`;
     block.draggable = true;
     block.dataset.apptId = String(appt.id);
-    block.title = `${appt.patient_name} ${appt.start_at}`;
-    block.innerHTML = `<span class="title">${appt.patient_name}</span><span class="meta">${
-      appt.start_at.split(" ")[1]
-    }-${appt.end_at.split(" ")[1]} • ${appt.patient_phone}</span>`;
-    const h = Math.max(30, Math.floor((durationMin(appt) / state.stepMin) * 34) - 6);
+    block.title = "Клик — карточка записи";
+    block.innerHTML = `<span class="title">${esc(appt.patient_name)}</span>`;
+    const h = Math.max(28, Math.floor((durationMin(appt) / state.stepMin) * 34) - 6);
     block.style.height = `${h}px`;
+    block.addEventListener("click", (e) => {
+      e.stopPropagation();
+      openClientDrawer(appt.id);
+    });
     block.addEventListener("dragstart", () => {
       state.dragApptId = Number(block.dataset.apptId);
       block.classList.add("appt-dragging");
@@ -261,20 +372,6 @@ function renderScheduler() {
       state.dragApptId = null;
       block.classList.remove("appt-dragging");
       block.style.opacity = "1";
-    });
-    block.addEventListener("dblclick", async () => {
-      const next = prompt("Статус: booked/completed/no_show/cancelled", appt.status);
-      if (!next) return;
-      try {
-        await j(`/web-api/booking/appointments/${appt.id}/status`, {
-          method: "PATCH",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status: next }),
-        });
-        await loadAppointments();
-      } catch (err) {
-        setMsg(err.message, false);
-      }
     });
     slot.appendChild(block);
   }
@@ -299,6 +396,67 @@ function init() {
   mini.addEventListener("change", () => {
     dateInput.value = mini.value;
     loadAppointments();
+  });
+
+  drawerBackdrop()?.addEventListener("click", closeDrawers);
+  document.getElementById("cd-close")?.addEventListener("click", closeDrawers);
+  document.getElementById("sd-close")?.addEventListener("click", closeDrawers);
+
+  document.getElementById("cd-save-status")?.addEventListener("click", async () => {
+    if (!currentAppointmentId) return;
+    const st = document.getElementById("cd-status").value;
+    try {
+      await j(`/web-api/booking/appointments/${currentAppointmentId}/status`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: st }),
+      });
+      await loadAppointments();
+      closeDrawers();
+      setMsg("Статус обновлён", true);
+    } catch (err) {
+      setMsg(err.message, false);
+    }
+  });
+
+  document.getElementById("form-add-spec")?.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const fd = new FormData(e.target);
+    const msg = document.getElementById("sd-msg");
+    const work_days =
+      [...document.querySelectorAll('#form-add-spec input[name="wd"]:checked')]
+        .map((x) => x.value)
+        .sort((a, b) => Number(a) - Number(b))
+        .join(",") || "1,2,3,4,5";
+    const durRaw = fd.get("default_duration_min");
+    const durNum = durRaw != null && String(durRaw).trim() !== "" ? Number(durRaw) : null;
+    const payload = {
+      full_name: String(fd.get("full_name") || "").trim(),
+      specialty_label: String(fd.get("specialty_label") || "").trim(),
+      direction_id: Number(fd.get("direction_id")),
+      phone: String(fd.get("phone") || "").trim(),
+      work_schedule_note: String(fd.get("work_schedule_note") || "").trim(),
+      work_time_from: String(fd.get("work_time_from") || "09:00"),
+      work_time_to: String(fd.get("work_time_to") || "18:00"),
+      work_days,
+      default_duration_min: durNum != null && !Number.isNaN(durNum) ? durNum : null,
+    };
+    try {
+      await j("/web-api/booking/specialists", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      msg.textContent = "";
+      msg.className = "hint ok";
+      await loadSpecialists();
+      await loadAppointments();
+      closeDrawers();
+      setMsg("Врач добавлен", true);
+    } catch (err) {
+      msg.textContent = err.message;
+      msg.className = "hint err";
+    }
   });
 
   document.getElementById("booking-form").addEventListener("submit", async (e) => {

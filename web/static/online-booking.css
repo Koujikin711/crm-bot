@@ -106,7 +106,6 @@
 
 .sched-head {
   display: grid;
-  grid-template-columns: 70px repeat(var(--spec-count), minmax(200px, 1fr));
   position: sticky;
   top: 0;
   z-index: 30;
@@ -136,9 +135,67 @@
 
 .sched-body {
   display: grid;
-  grid-template-columns: 70px repeat(var(--spec-count), minmax(200px, 1fr));
-  /* Абсолютные карточки не увеличивают высоту ряда — запас внизу, чтобы не «вылезали» за сетку */
+  /* grid-template-columns задаётся из JS: 70px + колонки врачей + «Добавить» */
   padding-bottom: 120px;
+}
+
+.sched-resource-head {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  text-align: left;
+}
+
+.sched-resource-name {
+  font-weight: 700;
+  font-size: 13px;
+  line-height: 1.25;
+  color: #1e2d3d;
+}
+
+.sched-resource-sub {
+  font-size: 11px;
+  font-weight: 500;
+  color: #6b7c90;
+  line-height: 1.2;
+}
+
+.sched-head-date {
+  font-size: 10px;
+  color: #8a9aac;
+  margin-top: 2px;
+}
+
+.sched-head-add {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px;
+}
+
+.btn-add-resource {
+  border: none;
+  border-radius: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+  background: linear-gradient(180deg, #2fc6f6 0%, #1e9fd8 100%);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(30, 159, 216, 0.35);
+}
+
+.btn-add-resource:hover {
+  filter: brightness(1.05);
+}
+
+.sched-filler {
+  border-right: 1px solid #e2e8f0;
+  border-bottom: 1px solid #e8edf3;
+  background: rgba(248, 250, 252, 0.5);
+  min-height: 34px;
 }
 
 .time-cell {
@@ -185,13 +242,16 @@
   right: 6px;
   top: 4px;
   border-radius: 8px;
-  padding: 6px 8px;
+  padding: 4px 8px;
   color: #fff;
   font-size: 12px;
   cursor: grab;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
   z-index: 1;
   max-width: calc(100% - 12px);
+  min-height: 26px;
+  display: flex;
+  align-items: center;
 }
 
 .appt.appt-dragging {
@@ -205,8 +265,153 @@
 .appt.cancelled { background: #9aa0aa; }
 .appt.no_show { background: #d64545; }
 
-.appt .title { font-weight: 700; display: block; }
-.appt .meta { opacity: 0.95; font-size: 11px; }
+.appt .title {
+  font-weight: 700;
+  display: block;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  width: 100%;
+  line-height: 1.25;
+}
+
+.appt .meta {
+  display: none;
+}
+
+/* Выезжающие панели (карточка клиента / новый врач) */
+.drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(15, 30, 45, 0.45);
+  z-index: 200;
+  opacity: 1;
+  transition: opacity 0.2s;
+}
+
+.drawer-backdrop.is-hidden {
+  display: none;
+}
+
+.booking-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  width: min(420px, 100vw);
+  height: 100vh;
+  background: #fff;
+  box-shadow: -8px 0 32px rgba(0, 0, 0, 0.12);
+  z-index: 210;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.booking-drawer.is-hidden {
+  display: none;
+}
+
+.booking-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 16px 18px;
+  border-bottom: 1px solid #e2e8f0;
+  background: linear-gradient(180deg, #f8fafc 0%, #fff 100%);
+}
+
+.booking-drawer-head h2 {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 700;
+  color: #1e2d3d;
+}
+
+.drawer-close {
+  border: none;
+  background: #eef2f7;
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  font-size: 22px;
+  line-height: 1;
+  cursor: pointer;
+  color: #4a5d70;
+}
+
+.drawer-close:hover {
+  background: #e2e8f0;
+}
+
+.booking-drawer-body {
+  padding: 16px 18px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.cd-muted {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: #64748b;
+}
+
+.cd-dl {
+  margin: 0 0 16px;
+  display: grid;
+  gap: 10px;
+}
+
+.cd-dl dt {
+  margin: 0;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #8a9aac;
+}
+
+.cd-dl dd {
+  margin: 2px 0 0;
+  font-size: 14px;
+  color: #1e2d3d;
+}
+
+.cd-status-row {
+  margin-bottom: 12px;
+}
+
+.cd-save-btn {
+  width: 100%;
+  margin-top: 8px;
+}
+
+.sd-row2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+}
+
+.sd-days {
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 10px 12px;
+  margin: 0 0 12px;
+}
+
+.sd-days legend {
+  font-size: 12px;
+  color: #64748b;
+  padding: 0 4px;
+}
+
+.sd-days label {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-right: 8px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  flex-direction: row;
+}
 
 .queue-list {
   display: grid;

@@ -76,6 +76,12 @@ def init_booking_tables():
             direction_id INTEGER NOT NULL,
             phone TEXT,
             is_active INTEGER NOT NULL DEFAULT 1,
+            specialty_label TEXT,
+            work_days TEXT,
+            work_time_from TEXT,
+            work_time_to TEXT,
+            work_schedule_note TEXT,
+            default_duration_min INTEGER,
             FOREIGN KEY(direction_id) REFERENCES medical_directions(id)
         )"""
     )
@@ -114,7 +120,48 @@ def init_booking_tables():
     )
 
 
+def _migrate_booking_specialists_columns():
+    """Добавляем поля врача (график, специальность, длительность) на существующих БД."""
+    _, db_path = _get_config()
+    try:
+        with sqlite3.connect(db_path, timeout=10) as conn:
+            cur = conn.cursor()
+            cur.execute("PRAGMA table_info(medical_specialists)")
+            existing = {row[1] for row in cur.fetchall()}
+            for col, typ in (
+                ("specialty_label", "TEXT"),
+                ("work_days", "TEXT"),
+                ("work_time_from", "TEXT"),
+                ("work_time_to", "TEXT"),
+                ("work_schedule_note", "TEXT"),
+                ("default_duration_min", "INTEGER"),
+            ):
+                if col not in existing:
+                    cur.execute(f"ALTER TABLE medical_specialists ADD COLUMN {col} {typ}")
+            conn.commit()
+    except Exception:
+        pass
+
+
 init_booking_tables()
+_migrate_booking_specialists_columns()
+
+
+def _duration_min_for_specialist_direction(specialist_id: int, direction_id: int) -> int:
+    direction = execute_query(
+        "SELECT duration_min FROM medical_directions WHERE id = ?",
+        (direction_id,),
+        fetchone=True,
+    )
+    base = int(direction[0] or 30) if direction else 30
+    spec = execute_query(
+        "SELECT default_duration_min FROM medical_specialists WHERE id = ?",
+        (specialist_id,),
+        fetchone=True,
+    )
+    if spec and spec[0] is not None:
+        return max(5, int(spec[0]))
+    return max(5, base)
 
 
 def verify_telegram_login(data, token):
@@ -366,7 +413,9 @@ def api_booking_add_direction():
 @booking_access_required
 def api_booking_specialists():
     rows = execute_query(
-        """SELECT s.id, s.full_name, s.direction_id, d.name, s.phone, s.is_active
+        """SELECT s.id, s.full_name, s.direction_id, d.name, s.phone, s.is_active,
+                  s.specialty_label, s.work_days, s.work_time_from, s.work_time_to,
+                  s.work_schedule_note, s.default_duration_min
            FROM medical_specialists s
            LEFT JOIN medical_directions d ON d.id = s.direction_id
            ORDER BY s.id DESC""",
@@ -381,6 +430,12 @@ def api_booking_specialists():
                 "direction_name": r[3],
                 "phone": r[4],
                 "is_active": bool(r[5]),
+                "specialty_label": r[6],
+                "work_days": r[7],
+                "work_time_from": r[8],
+                "work_time_to": r[9],
+                "work_schedule_note": r[10],
+                "default_duration_min": r[11],
             }
             for r in (rows or [])
         ]
@@ -395,11 +450,31 @@ def api_booking_add_specialist():
     full_name = str(body.get("full_name", "")).strip()
     direction_id = int(body.get("direction_id") or 0)
     phone = str(body.get("phone", "")).strip()
+    specialty_label = str(body.get("specialty_label", "")).strip()
+    work_days = str(body.get("work_days", "1,2,3,4,5")).strip() or "1,2,3,4,5"
+    work_time_from = str(body.get("work_time_from", "09:00")).strip() or "09:00"
+    work_time_to = str(body.get("work_time_to", "18:00")).strip() or "18:00"
+    work_schedule_note = str(body.get("work_schedule_note", "")).strip()
+    raw_dur = body.get("default_duration_min")
+    default_duration_min = int(raw_dur) if raw_dur not in (None, "", []) else None
     if not full_name or not direction_id:
         return jsonify({"detail": "full_name and direction_id are required"}), 400
     execute_query(
-        "INSERT INTO medical_specialists (full_name, direction_id, phone, is_active) VALUES (?, ?, ?, 1)",
-        (full_name, direction_id, phone),
+        """INSERT INTO medical_specialists
+           (full_name, direction_id, phone, is_active, specialty_label, work_days, work_time_from,
+            work_time_to, work_schedule_note, default_duration_min)
+           VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?)""",
+        (
+            full_name,
+            direction_id,
+            phone,
+            specialty_label or None,
+            work_days,
+            work_time_from,
+            work_time_to,
+            work_schedule_note or None,
+            default_duration_min,
+        ),
     )
     return jsonify({"ok": True}), 201
 
@@ -410,7 +485,7 @@ def api_booking_add_specialist():
 def api_booking_appointments():
     date_s = request.args.get("date", "").strip()
     specialist_id = request.args.get("specialist_id", "").strip()
-    q = """SELECT a.id, a.patient_name, a.patient_phone, a.start_at, a.end_at, a.status,
+    q = """SELECT a.id, a.patient_name, a.patient_phone, a.lead_phone, a.start_at, a.end_at, a.status,
                   a.specialist_id, a.responsible_manager_id, d.name, s.full_name, a.comment
            FROM medical_appointments a
            LEFT JOIN medical_directions d ON d.id = a.direction_id
@@ -431,17 +506,54 @@ def api_booking_appointments():
                 "id": r[0],
                 "patient_name": r[1],
                 "patient_phone": r[2],
-                "start_at": r[3],
-                "end_at": r[4],
-                "status": r[5],
-                "specialist_id": r[6],
-                "responsible_manager_id": r[7],
-                "direction_name": r[8],
-                "specialist_name": r[9],
-                "comment": r[10],
+                "lead_phone": r[3],
+                "start_at": r[4],
+                "end_at": r[5],
+                "status": r[6],
+                "specialist_id": r[7],
+                "responsible_manager_id": r[8],
+                "direction_name": r[9],
+                "specialist_name": r[10],
+                "comment": r[11],
             }
             for r in (rows or [])
         ]
+    )
+
+
+@app.get("/web-api/booking/appointments/<int:appointment_id>")
+@login_required
+@booking_access_required
+def api_booking_appointment_one(appointment_id):
+    row = execute_query(
+        """SELECT a.id, a.patient_name, a.patient_phone, a.lead_phone, a.start_at, a.end_at, a.status,
+                  a.specialist_id, a.responsible_manager_id, d.name, s.full_name, a.comment,
+                  a.direction_id
+           FROM medical_appointments a
+           LEFT JOIN medical_directions d ON d.id = a.direction_id
+           LEFT JOIN medical_specialists s ON s.id = a.specialist_id
+           WHERE a.id = ?""",
+        (appointment_id,),
+        fetchone=True,
+    )
+    if not row:
+        return jsonify({"detail": "Not found"}), 404
+    return jsonify(
+        {
+            "id": row[0],
+            "patient_name": row[1],
+            "patient_phone": row[2],
+            "lead_phone": row[3],
+            "start_at": row[4],
+            "end_at": row[5],
+            "status": row[6],
+            "specialist_id": row[7],
+            "responsible_manager_id": row[8],
+            "direction_name": row[9],
+            "specialist_name": row[10],
+            "comment": row[11],
+            "direction_id": row[12],
+        }
     )
 
 
@@ -467,7 +579,7 @@ def api_booking_create_appointment():
     )
     if not direction:
         return jsonify({"detail": "Direction not found"}), 404
-    duration_min = int(direction[0] or 30)
+    duration_min = _duration_min_for_specialist_direction(specialist_id, direction_id)
     dt_start = _parse_dt(start_at)
     dt_end = dt_start.replace(second=0, microsecond=0)
     dt_end = dt_end.timestamp() + duration_min * 60
@@ -530,7 +642,7 @@ def api_booking_move_appointment(appointment_id):
     )
     if not direction:
         return jsonify({"detail": "Direction not found"}), 404
-    duration_min = int(direction[0] or 30)
+    duration_min = _duration_min_for_specialist_direction(specialist_id, direction_id)
     dt_start = _parse_dt(start_at)
     dt_end = dt_start.replace(second=0, microsecond=0)
     dt_end = dt_end.timestamp() + duration_min * 60
