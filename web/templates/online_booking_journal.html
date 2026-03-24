@@ -3,6 +3,12 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <script>
+    try {
+      if (window.matchMedia("(min-width:769px)").matches && localStorage.getItem("crm_sidebar_collapsed") === "1")
+        document.documentElement.classList.add("sidebar-collapsed");
+    } catch (e) {}
+  </script>
   <title>Журнал записей — {{ fio or 'CRM' }}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='sidebar.css') }}">
   <link rel="stylesheet" href="{{ url_for('static', filename='online-booking.css') }}">
@@ -11,7 +17,10 @@
   <aside class="sidebar">
     <div class="sidebar-header">
       <span class="logo">Metodi CRM</span>
-      <a href="{{ url_for('logout') }}" class="logout">Выйти</a>
+      <div class="sidebar-header-actions">
+        <a href="{{ url_for('logout') }}" class="logout">Выйти</a>
+        <button type="button" class="sidebar-toggle" id="sidebar-toggle" aria-label="Свернуть меню">☰</button>
+      </div>
     </div>
     <div class="user-info">
       <strong>{{ fio or 'Пользователь' }}</strong>
@@ -35,6 +44,7 @@
     </div>
     <div id="journal-list" class="list"></div>
   </main>
+  <script src="{{ url_for('static', filename='sidebar.js') }}"></script>
   <script src="{{ url_for('static', filename='online-booking-journal.js') }}"></script>
 </body>
 </html>

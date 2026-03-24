@@ -357,7 +357,7 @@ function renderScheduler() {
     block.dataset.apptId = String(appt.id);
     block.title = "Клик — карточка записи";
     block.innerHTML = `<span class="title">${esc(appt.patient_name)}</span>`;
-    const h = Math.max(28, Math.floor((durationMin(appt) / state.stepMin) * 34) - 6);
+    const h = Math.max(26, Math.floor((durationMin(appt) / state.stepMin) * 30) - 5);
     block.style.height = `${h}px`;
     block.addEventListener("click", (e) => {
       e.stopPropagation();

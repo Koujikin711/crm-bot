@@ -12,13 +12,9 @@
   --bx-shadow: 0 4px 20px rgba(30, 27, 75, 0.12), 0 1px 3px rgba(0, 0, 0, 0.06);
   display: grid;
   gap: 8px;
-  background:
-    radial-gradient(ellipse 90% 70% at 85% 10%, rgba(255, 255, 255, 0.12) 0%, transparent 50%),
-    radial-gradient(ellipse 70% 50% at 10% 90%, rgba(167, 139, 250, 0.2) 0%, transparent 55%),
-    var(--crm-shell-gradient, linear-gradient(180deg, #f472b6 0%, #312e81 100%));
-  background-attachment: fixed;
+  /* Фон страницы = body (sidebar.css), без второго слоя — нет «шва» у края */
+  background: transparent;
   color: var(--bx-text);
-  margin-left: 200px;
   min-height: 100vh;
   padding: 0.45rem 0.75rem 0.75rem;
   box-sizing: border-box;
@@ -45,23 +41,38 @@
 
 /* Узкая правая колонка: календарь, очередь, быстрая запись */
 .content.booking-root .right-panel {
+  flex: 0 0 auto;
   max-width: 236px;
   width: 100%;
-  padding: 10px 12px 12px;
-  align-self: start;
+  padding: 8px 10px 10px;
+  align-self: center;
+  max-height: 520px;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .content.booking-root .right-panel h3 {
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 600;
   text-transform: uppercase;
   letter-spacing: 0.04em;
   color: var(--bx-text-secondary);
-  margin: 0 0 6px;
+  margin: 0 0 4px;
 }
 
 .content.booking-root .right-panel h3:not(:first-of-type) {
-  margin-top: 12px;
+  margin-top: 8px;
+}
+
+.content.booking-root .right-panel #mini-calendar {
+  margin-bottom: 2px;
+}
+
+.content.booking-root .right-panel textarea#comment {
+  min-height: 36px;
+  max-height: 52px;
+  resize: vertical;
+  line-height: 1.35;
 }
 
 .content.booking-root .right-panel label {
@@ -102,7 +113,7 @@
 }
 
 .content.booking-root .right-panel .queue-list {
-  max-height: 180px;
+  max-height: 100px;
 }
 
 .content.booking-root .right-panel .hint {
@@ -195,15 +206,20 @@
 }
 
 .booking-main {
-  display: grid;
-  grid-template-columns: 1fr minmax(200px, 236px);
-  gap: 8px;
-  align-items: start;
-  min-height: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  min-height: calc(100vh - 118px);
 }
 
 .scheduler-panel {
-  display: grid;
+  flex: 1 1 420px;
+  min-width: 280px;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
   gap: 5px;
 }
 
@@ -226,10 +242,11 @@
   border: 1px solid var(--bx-border, #dfe3e6);
   border-radius: 8px;
   overflow: auto;
-  /* Выше: компактная шапка + больше места под сетку */
-  height: calc(100vh - 108px);
-  min-height: 420px;
-  max-height: 900px;
+  /* Высота вровень с правой колонкой (календарь + форма) */
+  height: 520px;
+  max-height: min(520px, calc(100vh - 200px));
+  min-height: 320px;
+  width: 100%;
   background: #fafbfc;
   box-shadow: inset 0 1px 0 #fff;
 }
@@ -249,12 +266,15 @@
 }
 
 .sched-head div {
-  padding: 8px;
+  padding: 4px 6px;
   border-right: 1px solid var(--bx-border-soft, #e6e9ec);
   font-weight: 600;
-  font-size: 13px;
+  font-size: 12px;
   color: var(--bx-text, #333);
   background: transparent;
+  display: flex;
+  align-items: center;
+  min-height: 0;
 }
 
 .sched-head div:first-child {
@@ -263,57 +283,69 @@
   z-index: 35;
   color: var(--bx-text-secondary, #525c69);
   font-weight: 600;
+  font-size: 11px;
   background: linear-gradient(180deg, #f5f7f9 0%, #eef1f5 100%);
   box-shadow: 2px 0 4px rgba(0, 0, 0, 0.03);
 }
 
 .sched-body {
   display: grid;
-  /* grid-template-columns задаётся из JS: 70px + колонки врачей + «Добавить» */
-  padding-bottom: 120px;
+  padding-bottom: 72px;
 }
 
 .sched-resource-head {
   display: flex;
   flex-direction: column;
   align-items: flex-start;
-  gap: 2px;
+  justify-content: center;
+  gap: 0;
   text-align: left;
+  width: 100%;
+  min-height: 0;
 }
 
 .sched-resource-name {
   font-weight: 600;
-  font-size: 13px;
-  line-height: 1.25;
+  font-size: 11px;
+  line-height: 1.2;
   color: var(--bx-text, #333);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sched-resource-sub {
-  font-size: 11px;
-  font-weight: 400;
+  font-size: 9px;
+  font-weight: 500;
   color: var(--bx-text-secondary, #525c69);
-  line-height: 1.2;
+  line-height: 1.15;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .sched-head-date {
-  font-size: 10px;
+  font-size: 9px;
   color: var(--bx-text-muted, #858fa4);
-  margin-top: 2px;
+  margin-top: 1px;
+  line-height: 1.1;
 }
 
 .sched-head-add {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 6px;
+  padding: 4px;
 }
 
 .btn-add-resource {
   border: none;
-  border-radius: 6px;
-  padding: 7px 10px;
+  border-radius: 5px;
+  padding: 5px 8px;
   cursor: pointer;
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
   white-space: nowrap;
   background: linear-gradient(180deg, var(--bx-accent, #2fc6f6) 0%, var(--bx-accent-deep, #1e9fd8) 100%);
@@ -329,7 +361,7 @@
   border-right: 1px solid var(--bx-border-soft, #e6e9ec);
   border-bottom: 1px solid var(--bx-border-soft, #e6e9ec);
   background: #f9fafb;
-  min-height: 34px;
+  min-height: 30px;
 }
 
 .time-cell {
@@ -347,7 +379,7 @@
 
 .slot {
   position: relative;
-  min-height: 34px;
+  min-height: 30px;
   border-right: 1px solid var(--bx-border-soft, #e6e9ec);
   border-bottom: 1px solid var(--bx-border-soft, #e6e9ec);
   background: #fff;
@@ -655,18 +687,26 @@ button:hover {
 
 @media (max-width: 1300px) {
   .booking-main {
-    grid-template-columns: 1fr;
+    flex-direction: column;
+    align-items: stretch;
+    min-height: 0;
   }
 
   .content.booking-root .right-panel {
     max-width: none;
     width: 100%;
+    max-height: none;
+    align-self: stretch;
+  }
+
+  #scheduler-wrap {
+    height: min(520px, 55vh);
+    max-height: none;
   }
 }
 
 @media (max-width: 768px) {
   .content.booking-root {
-    margin-left: 72px;
     padding: 0.75rem 0.65rem;
   }
 }
