@@ -1,34 +1,46 @@
-/* Палитра в духе Bitrix24 */
+/* Палитра карточек + тот же фон, что и у сайдбара (градиент фуксия → индиго) */
 .content.booking-root {
-  --bx-bg-page: #eef2f4;
   --bx-bg-card: #ffffff;
   --bx-border: #dfe3e6;
   --bx-border-soft: #e6e9ec;
   --bx-text: #333333;
   --bx-text-secondary: #525c69;
   --bx-text-muted: #858fa4;
-  --bx-accent: #2fc6f6;
-  --bx-accent-hover: #5dd4f8;
-  --bx-accent-deep: #1e9fd8;
-  --bx-shadow: 0 1px 3px rgba(0, 0, 0, 0.08), 0 2px 8px rgba(82, 92, 105, 0.06);
+  --bx-accent: #a855f7;
+  --bx-accent-hover: #c084fc;
+  --bx-accent-deep: #7c3aed;
+  --bx-shadow: 0 4px 20px rgba(30, 27, 75, 0.12), 0 1px 3px rgba(0, 0, 0, 0.06);
   display: grid;
-  gap: 12px;
-  background: var(--bx-bg-page);
+  gap: 8px;
+  background:
+    radial-gradient(ellipse 90% 70% at 85% 10%, rgba(255, 255, 255, 0.12) 0%, transparent 50%),
+    radial-gradient(ellipse 70% 50% at 10% 90%, rgba(167, 139, 250, 0.2) 0%, transparent 55%),
+    var(--crm-shell-gradient, linear-gradient(180deg, #f472b6 0%, #312e81 100%));
+  background-attachment: fixed;
   color: var(--bx-text);
   margin-left: 200px;
   min-height: 100vh;
-  padding: 0.85rem 1rem 1.25rem;
+  padding: 0.45rem 0.75rem 0.75rem;
   box-sizing: border-box;
 }
 
 .content.booking-root .panel {
-  background: var(--bx-bg-card);
-  border: 1px solid var(--bx-border);
+  background: rgba(255, 255, 255, 0.98);
+  border: 1px solid rgba(255, 255, 255, 0.65);
   border-radius: 8px;
   box-shadow: var(--bx-shadow);
-  backdrop-filter: none;
-  -webkit-backdrop-filter: none;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   padding: 14px 16px;
+}
+
+.content.booking-root .scheduler-panel {
+  padding: 8px 10px 10px;
+}
+
+/* Компактная шапка: меньше по высоте, чипы в одну линию с заголовком */
+.content.booking-root > .panel.booking-header {
+  padding: 6px 10px 8px;
 }
 
 /* Узкая правая колонка: календарь, очередь, быстрая запись */
@@ -110,52 +122,89 @@
   font-size: 16px;
 }
 
-.booking-header {
+.content.booking-root .booking-header {
   display: flex;
   justify-content: space-between;
-  align-items: center;
-  gap: 16px;
-}
-
-.booking-header h1 {
-  margin: 0;
-  font-size: 20px;
-  font-weight: 600;
-  color: var(--bx-text, #333);
-}
-
-.booking-header .right {
-  display: flex;
   align-items: center;
   gap: 10px;
 }
 
-.chips {
+.content.booking-root .booking-header .left {
   display: flex;
-  gap: 8px;
-  margin-top: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+  min-width: 0;
 }
 
-.chip {
+.content.booking-root .booking-header h1 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: -0.02em;
+}
+
+.content.booking-root .booking-header .right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.content.booking-root .booking-header .right label {
+  font-size: 11px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.content.booking-root .booking-header .right input[type="date"],
+.content.booking-root .booking-header .right select {
+  padding: 3px 6px;
+  font-size: 11px;
+  border-radius: 5px;
+}
+
+.content.booking-root .booking-header .right button {
+  padding: 5px 10px;
+  font-size: 11px;
+  border-radius: 5px;
+  background: linear-gradient(180deg, #e879f9 0%, #a855f7 50%, #7c3aed 100%);
+  box-shadow: 0 2px 8px rgba(124, 58, 237, 0.35);
+}
+
+.content.booking-root .booking-header .right button:hover {
+  filter: brightness(1.06);
+}
+
+.content.booking-root .chips {
+  display: flex;
+  gap: 5px;
+  margin-top: 0;
+  flex-wrap: wrap;
+}
+
+.content.booking-root .chip {
   background: #f5f7f9;
   border: 1px solid var(--bx-border, #dfe3e6);
-  border-radius: 14px;
-  padding: 4px 10px;
-  font-size: 11px;
+  border-radius: 10px;
+  padding: 2px 7px;
+  font-size: 10px;
   color: var(--bx-text-secondary, #525c69);
 }
 
 .booking-main {
   display: grid;
   grid-template-columns: 1fr minmax(200px, 236px);
-  gap: 12px;
+  gap: 8px;
   align-items: start;
-  min-height: 75vh;
+  min-height: 0;
 }
 
 .scheduler-panel {
   display: grid;
-  gap: 8px;
+  gap: 5px;
 }
 
 .scheduler-toolbar {
@@ -177,7 +226,10 @@
   border: 1px solid var(--bx-border, #dfe3e6);
   border-radius: 8px;
   overflow: auto;
-  height: 68vh;
+  /* Выше: компактная шапка + больше места под сетку */
+  height: calc(100vh - 108px);
+  min-height: 420px;
+  max-height: 900px;
   background: #fafbfc;
   box-shadow: inset 0 1px 0 #fff;
 }
