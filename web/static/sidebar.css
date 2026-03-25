@@ -2,15 +2,16 @@
 * { box-sizing: border-box; }
 
 :root {
+  /* На ~2 тона темнее прежнего: меньше неона, спокойнее для глаз */
   --crm-shell-gradient: linear-gradient(
     180deg,
-    #f472b6 0%,
-    #e879f9 12%,
-    #d946ef 28%,
-    #a855f7 48%,
-    #7c3aed 66%,
-    #5b21b6 82%,
-    #312e81 100%
+    #be185d 0%,
+    #a21caf 12%,
+    #86198f 28%,
+    #6b21a8 48%,
+    #4c1d95 66%,
+    #3b0764 82%,
+    #1e1b4b 100%
   );
   --sidebar-w: 200px;
 }
@@ -52,7 +53,7 @@ body {
   flex-direction: column;
   z-index: 100;
   /* Мягкая тень без жёсткой «границы» у контента */
-  box-shadow: 2px 0 20px rgba(49, 46, 129, 0.18);
+  box-shadow: 2px 0 20px rgba(15, 23, 42, 0.22);
 }
 
 .sidebar-header {

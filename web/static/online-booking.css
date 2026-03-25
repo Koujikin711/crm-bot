@@ -2,14 +2,17 @@
 .content.booking-root {
   --bx-bg-card: #ffffff;
   --bx-border: #dfe3e6;
-  --bx-border-soft: #e6e9ec;
+  /* Линии сетки как в Bitrix24: почти незаметные */
+  --bx-border-soft: #eaeaea;
+  --bx-grid-line: #ebebeb;
   --bx-text: #333333;
   --bx-text-secondary: #525c69;
   --bx-text-muted: #858fa4;
-  --bx-accent: #a855f7;
-  --bx-accent-hover: #c084fc;
-  --bx-accent-deep: #7c3aed;
-  --bx-shadow: 0 4px 20px rgba(30, 27, 75, 0.12), 0 1px 3px rgba(0, 0, 0, 0.06);
+  /* Акцент страницы — спокойный «битриксовый» циан */
+  --bx-accent: #2fc6f6;
+  --bx-accent-hover: #5dd4f8;
+  --bx-accent-deep: #1e9fd8;
+  --bx-shadow: 0 4px 20px rgba(15, 23, 42, 0.1), 0 1px 3px rgba(0, 0, 0, 0.05);
   display: grid;
   gap: 8px;
   /* Фон страницы = body (sidebar.css), без второго слоя — нет «шва» у края */
@@ -181,8 +184,8 @@
   padding: 5px 10px;
   font-size: 11px;
   border-radius: 5px;
-  background: linear-gradient(180deg, #e879f9 0%, #a855f7 50%, #7c3aed 100%);
-  box-shadow: 0 2px 8px rgba(124, 58, 237, 0.35);
+  background: linear-gradient(180deg, #3dbae8 0%, #2fc6f6 45%, #1e9fd8 100%);
+  box-shadow: 0 1px 4px rgba(30, 159, 216, 0.35);
 }
 
 .content.booking-root .booking-header .right button:hover {
@@ -239,16 +242,16 @@
 #scheduler-wrap {
   position: relative;
   isolation: isolate;
-  border: 1px solid var(--bx-border, #dfe3e6);
-  border-radius: 8px;
+  border: 1px solid var(--bx-grid-line, #ebebeb);
+  border-radius: 10px;
   overflow: auto;
   /* Высота вровень с правой колонкой (календарь + форма) */
   height: 520px;
   max-height: min(520px, calc(100vh - 200px));
   min-height: 320px;
   width: 100%;
-  background: #fafbfc;
-  box-shadow: inset 0 1px 0 #fff;
+  background: #ffffff;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.8);
 }
 
 .sched-grid {
@@ -260,16 +263,17 @@
   position: sticky;
   top: 0;
   z-index: 30;
-  background: linear-gradient(180deg, #f5f7f9 0%, #eef1f5 100%);
-  border-bottom: 1px solid var(--bx-border, #dfe3e6);
-  box-shadow: 0 2px 6px rgba(82, 92, 105, 0.06);
+  background: #fafbfc;
+  border-bottom: 1px solid var(--bx-grid-line, #ebebeb);
+  box-shadow: 0 1px 0 rgba(0, 0, 0, 0.03);
 }
 
 .sched-head div {
-  padding: 4px 6px;
-  border-right: 1px solid var(--bx-border-soft, #e6e9ec);
+  padding: 8px 10px;
+  border-right: 1px solid var(--bx-grid-line, #ebebeb);
   font-weight: 600;
   font-size: 12px;
+  letter-spacing: -0.01em;
   color: var(--bx-text, #333);
   background: transparent;
   display: flex;
@@ -281,16 +285,17 @@
   position: sticky;
   left: 0;
   z-index: 35;
-  color: var(--bx-text-secondary, #525c69);
+  color: var(--bx-text-muted, #858fa4);
   font-weight: 600;
   font-size: 11px;
-  background: linear-gradient(180deg, #f5f7f9 0%, #eef1f5 100%);
-  box-shadow: 2px 0 4px rgba(0, 0, 0, 0.03);
+  background: #fafbfc;
+  box-shadow: 1px 0 0 var(--bx-grid-line, #ebebeb);
 }
 
 .sched-body {
   display: grid;
   padding-bottom: 72px;
+  grid-auto-rows: minmax(32px, auto);
 }
 
 .sched-resource-head {
@@ -342,15 +347,15 @@
 
 .btn-add-resource {
   border: none;
-  border-radius: 5px;
-  padding: 5px 8px;
+  border-radius: 6px;
+  padding: 6px 10px;
   cursor: pointer;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 600;
   white-space: nowrap;
-  background: linear-gradient(180deg, var(--bx-accent, #2fc6f6) 0%, var(--bx-accent-deep, #1e9fd8) 100%);
+  background: linear-gradient(180deg, #3dbae8 0%, var(--bx-accent, #2fc6f6) 40%, var(--bx-accent-deep, #1e9fd8) 100%);
   color: #fff;
-  box-shadow: 0 1px 4px rgba(47, 198, 246, 0.4);
+  box-shadow: 0 1px 3px rgba(30, 159, 216, 0.35);
 }
 
 .btn-add-resource:hover {
@@ -358,64 +363,67 @@
 }
 
 .sched-filler {
-  border-right: 1px solid var(--bx-border-soft, #e6e9ec);
-  border-bottom: 1px solid var(--bx-border-soft, #e6e9ec);
-  background: #f9fafb;
-  min-height: 30px;
+  border-right: 1px solid var(--bx-grid-line, #ebebeb);
+  border-bottom: 1px solid var(--bx-grid-line, #ebebeb);
+  background: #fafafa;
+  min-height: 32px;
 }
 
 .time-cell {
   position: sticky;
   left: 0;
   z-index: 15;
-  border-right: 1px solid var(--bx-border-soft, #e6e9ec);
-  border-bottom: 1px solid var(--bx-border-soft, #e6e9ec);
-  font-size: 12px;
+  border-right: 1px solid var(--bx-grid-line, #ebebeb);
+  border-bottom: 1px solid var(--bx-grid-line, #ebebeb);
+  font-size: 11px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
   color: var(--bx-text-muted, #858fa4);
-  padding: 6px;
-  background: #f5f7f9;
-  box-shadow: 1px 0 0 var(--bx-border-soft, #e6e9ec);
+  padding: 8px 10px;
+  background: #fafafa;
+  box-shadow: 1px 0 0 var(--bx-grid-line, #ebebeb);
 }
 
 .slot {
   position: relative;
-  min-height: 30px;
-  border-right: 1px solid var(--bx-border-soft, #e6e9ec);
-  border-bottom: 1px solid var(--bx-border-soft, #e6e9ec);
+  min-height: 32px;
+  border-right: 1px solid var(--bx-grid-line, #ebebeb);
+  border-bottom: 1px solid var(--bx-grid-line, #ebebeb);
   background: #fff;
   cursor: pointer;
-  transition: background 0.12s ease;
+  transition: background 0.15s ease, box-shadow 0.15s ease;
 }
 
 .slot:hover {
-  background: #f0f7fd;
+  background: #f7f9fc;
 }
 
 .slot.hover {
-  background: #e3f2fd;
+  background: #f0f6fb;
 }
 
 .slot.slot-picked {
-  box-shadow: inset 0 0 0 2px #2fc6f6;
-  background: #e8f7fd !important;
+  box-shadow: inset 0 0 0 1px rgba(47, 198, 246, 0.55);
+  background: rgba(47, 198, 246, 0.07) !important;
   z-index: 2;
 }
 
 /* Карточки ниже шапки и колонки «Время», иначе при скролле «лезут» поверх линий */
 .appt {
   position: absolute;
-  left: 6px;
-  right: 6px;
-  top: 4px;
-  border-radius: 8px;
-  padding: 4px 8px;
+  left: 5px;
+  right: 5px;
+  top: 3px;
+  border-radius: 6px;
+  padding: 6px 10px;
   color: #fff;
   font-size: 12px;
+  letter-spacing: -0.01em;
   cursor: grab;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12);
   z-index: 1;
-  max-width: calc(100% - 12px);
-  min-height: 26px;
+  max-width: calc(100% - 10px);
+  min-height: 28px;
   display: flex;
   align-items: center;
 }
@@ -423,15 +431,22 @@
 .appt.appt-dragging {
   z-index: 50;
   cursor: grabbing;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
 }
 
+/* Спокойные вертикальные градиенты, чуть темнее «неоновых» */
 .appt.booked {
-  background: linear-gradient(135deg, var(--bx-accent, #2fc6f6) 0%, var(--bx-accent-deep, #1e9fd8) 100%);
+  background: linear-gradient(180deg, #2a9fd4 0%, #1a7caf 100%);
 }
-.appt.completed { background: #22a06b; }
-.appt.cancelled { background: #9aa0aa; }
-.appt.no_show { background: #d64545; }
+.appt.completed {
+  background: linear-gradient(180deg, #1d9a5c 0%, #147a49 100%);
+}
+.appt.cancelled {
+  background: linear-gradient(180deg, #8b9299 0%, #6b7280 100%);
+}
+.appt.no_show {
+  background: linear-gradient(180deg, #c53030 0%, #9b2424 100%);
+}
 
 .appt .title {
   font-weight: 700;
