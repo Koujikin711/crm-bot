@@ -3,12 +3,6 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <script>
-    try {
-      if (window.matchMedia("(min-width:769px)").matches && localStorage.getItem("crm_sidebar_collapsed") === "1")
-        document.documentElement.classList.add("sidebar-collapsed");
-    } catch (e) {}
-  </script>
   <title>CRM — {{ fio or 'Кабинет' }}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='sidebar.css') }}">
 </head>
@@ -16,10 +10,7 @@
   <aside class="sidebar">
     <div class="sidebar-header">
       <span class="logo">Metodi CRM</span>
-      <div class="sidebar-header-actions">
-        <a href="{{ url_for('logout') }}" class="logout">Выйти</a>
-        <button type="button" class="sidebar-toggle" id="sidebar-toggle" aria-label="Свернуть меню">☰</button>
-      </div>
+      <a href="{{ url_for('logout') }}" class="logout">Выйти</a>
     </div>
     <div class="user-info">
       <strong>{{ fio or 'Пользователь' }}</strong>
@@ -43,6 +34,5 @@
       <p>Вы вошли в систему. Меню слева отображается в зависимости от роли и сферы (медицина / бизнес).</p>
     </div>
   </main>
-  <script src="{{ url_for('static', filename='sidebar.js') }}"></script>
 </body>
 </html>
