@@ -471,6 +471,7 @@ class Form(StatesGroup):
     # Медицина: поступления лидов (кастомная дата/период)
     med_leads_custom_period = State()
     # Медицина: завершение диалога -> Оплатил -> выбор пакета и суммы
+    med_paid_fio = State()
     med_paid_sum = State()
     # Удобство: поиск лида (ввод номера или ФИО)
     lead_search_query = State()
@@ -2643,12 +2644,32 @@ async def med_end_paid(c: types.CallbackQuery, state: FSMContext):
     full_phone = get_lead_phone_by_prefix(phone) or phone
     # В callback_data передаём короткий префикс (лимит Telegram)
     p_short = full_phone[:20] if len(full_phone) > 20 else full_phone
+    await state.update_data(med_paid_phone=full_phone)
+    await state.set_state(Form.med_paid_fio)
+    await c.message.edit_text("Введите ФИО пациента (как в записи):")
+    await c.answer()
+
+@dp.message(Form.med_paid_fio)
+async def med_paid_fio_done(m: types.Message, state: FSMContext):
+    fio = (m.text or "").strip()
+    if len(fio) < 3:
+        await m.answer("Введите ФИО пациента (минимум 3 символа).")
+        return
+    d = await state.get_data()
+    phone = d.get("med_paid_phone")
+    if not phone:
+        await state.clear()
+        return
+    execute_query(
+        "UPDATE leads SET name = ? WHERE phone = ? AND direction = 'med'",
+        (fio, phone),
+    )
+    p_short = phone[:20] if len(phone) > 20 else phone
     kb = InlineKeyboardBuilder()
     for i, pkg in enumerate(MED_PACKAGES):
         kb.button(text=pkg, callback_data=f"medpkg_{p_short}_{i}")
     kb.adjust(2)
-    await c.message.edit_text("Выберите услугу/пакет:", reply_markup=kb.as_markup())
-    await c.answer()
+    await m.answer("Выберите услугу/пакет:", reply_markup=kb.as_markup())
 
 @dp.callback_query(F.data.startswith("medpkg_"))
 async def med_paid_package(c: types.CallbackQuery, state: FSMContext):
@@ -2681,13 +2702,15 @@ async def med_paid_sum_done(m: types.Message, state: FSMContext):
     row = execute_query("SELECT COALESCE(massage_sessions, 0) FROM leads WHERE phone = ? AND direction = 'med'", (phone,), fetchone=True)
     prev_sessions = row[0] if row else 0
     new_sessions = prev_sessions + 1
+    now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    # Важно: статус 'paid' нужен веб-онлайн-записи (web-dev) для листа ожидания/быстрой записи.
     execute_query(
-        "UPDATE leads SET status='closed', is_answered=1, service=?, payment=COALESCE(payment,0)+?, payment_date=date('now'), massage_sessions=?, closed_at=? WHERE phone=? AND direction='med'",
-        (service, s, new_sessions, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), phone),
+        "UPDATE leads SET status='paid', is_answered=1, service=?, payment=COALESCE(payment,0)+?, payment_date=date('now'), massage_sessions=?, closed_at=? WHERE phone=? AND direction='med'",
+        (service, s, new_sessions, now_iso, phone),
     )
     execute_query("DELETE FROM follow_up_queue WHERE phone = ?", (phone,))
     execute_query("DELETE FROM chat_sessions WHERE user_id = ? AND phone = ?", (m.from_user.id, phone))
-    log_lead_event(phone, "status_change", f"closed: Оплатил {service} {s}", m.from_user.id)
+    log_lead_event(phone, "status_change", f"paid: Оплатил {service} {s}", m.from_user.id)
     execute_query("UPDATE users SET is_busy=0 WHERE user_id=?", (m.from_user.id,))
     outcome_mid = d.get("outcome_message_id")
     if outcome_mid:
@@ -2698,6 +2721,34 @@ async def med_paid_sum_done(m: types.Message, state: FSMContext):
     await m.answer(f"✅ Оплата {s} ({service}) зафиксирована.", reply_markup=get_main_menu(m.from_user.id))
     await state.clear()
     await try_assign_queued_lead_to_manager(m.from_user.id, 'med')
+    # Уведомление админам/владельцам медицины: появился пациент для онлайн-записи.
+    try:
+        row = execute_query(
+            "SELECT COALESCE(name, phone), COALESCE(service,''), COALESCE(payment,0) FROM leads WHERE phone = ? AND direction = 'med'",
+            (phone,),
+            fetchone=True,
+        )
+        fio = row[0] if row else phone
+        svc = row[1] if row else service
+        pay = row[2] if row else s
+        admin_rows = execute_query(
+            "SELECT user_id FROM users WHERE role IN ('owner') OR (role='admin' AND sphere='med')",
+            (),
+            fetchall=True,
+        )
+        targets = sorted({int(r[0]) for r in (admin_rows or []) if r and r[0]})
+        kb = InlineKeyboardBuilder().button(text="🗓️ Открыть онлайн-запись", url="").as_markup()  # url можно задать через переменную окружения позже
+        for uid in targets:
+            try:
+                await bot.send_message(
+                    uid,
+                    f"🆕 <b>Новая оплата (медицина)</b>\n👤 {fio}\n📞 {phone}\n🩺 {svc}\n💰 {pay}\n\nЗайдите в онлайн-запись и запишите пациента.",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
     if new_sessions >= 10:
         kb = InlineKeyboardBuilder().button(text="📞 Предложить Логопеда/Повтор", callback_data=f"med_logoped_{phone}").adjust(1).as_markup()
         await m.answer("Курс завершён (10-й визит). Предложите логопеда или повтор:", reply_markup=kb)
