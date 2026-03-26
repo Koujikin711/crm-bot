@@ -355,6 +355,7 @@ def api_booking_queue():
         """SELECT phone, COALESCE(name, phone), manager_id, last_touch
            FROM leads
            WHERE status IN ('paid','Оплатил','Купил')
+             AND direction = 'med'
              AND (phone NOT IN (SELECT patient_phone FROM medical_appointments WHERE status = 'booked'))
            ORDER BY COALESCE(last_touch,'') DESC
            LIMIT 200""",
@@ -681,6 +682,31 @@ def api_booking_create_appointment():
             now_s,
         ),
     )
+    # Уведомление пациенту в WhatsApp о записи (best-effort).
+    try:
+        from config import MED_API_URL, MED_ID_INSTANCE, MED_API_TOKEN
+
+        chat_phone = "".join([c for c in (patient_phone or "") if c.isdigit()])
+        if chat_phone and MED_API_URL and MED_ID_INSTANCE and MED_API_TOKEN:
+            send_url = f"{MED_API_URL}/waInstance{MED_ID_INSTANCE}/sendMessage/{MED_API_TOKEN}"
+            spec = execute_query(
+                "SELECT full_name FROM medical_specialists WHERE id = ?",
+                (specialist_id,),
+                fetchone=True,
+            )
+            dir_row = execute_query(
+                "SELECT name FROM medical_directions WHERE id = ?",
+                (direction_id,),
+                fetchone=True,
+            )
+            spec_name = (spec[0] if spec else "") or "специалист"
+            dir_name = (dir_row[0] if dir_row else "") or "услуга"
+            msg = f"✅ Вы записаны на приём.\n\n📅 {start_at}\n👨‍⚕️ {spec_name}\n🩺 {dir_name}\n\nЕсли нужно перенести — напишите нам."
+            import requests
+
+            requests.post(send_url, json={"chatId": f"{chat_phone}@c.us", "message": msg}, timeout=12)
+    except Exception:
+        pass
     return jsonify({"ok": True}), 201
 
 
