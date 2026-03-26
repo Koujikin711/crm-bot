@@ -2737,13 +2737,15 @@ async def med_paid_sum_done(m: types.Message, state: FSMContext):
             fetchall=True,
         )
         targets = sorted({int(r[0]) for r in (admin_rows or []) if r and r[0]})
-        kb = InlineKeyboardBuilder().button(text="🗓️ Открыть онлайн-запись", url="").as_markup()  # url можно задать через переменную окружения позже
+        booking_url = (os.environ.get("CRM_WEB_BOOKING_URL") or "https://web--crm-metodi-koujikin.amvera.io/online-booking").strip()
+        kb = InlineKeyboardBuilder().button(text="🗓️ Открыть онлайн-запись", url=booking_url).as_markup()
         for uid in targets:
             try:
                 await bot.send_message(
                     uid,
                     f"🆕 <b>Новая оплата (медицина)</b>\n👤 {fio}\n📞 {phone}\n🩺 {svc}\n💰 {pay}\n\nЗайдите в онлайн-запись и запишите пациента.",
                     parse_mode="HTML",
+                    reply_markup=kb,
                 )
             except Exception:
                 pass
