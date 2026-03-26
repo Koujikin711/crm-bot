@@ -9,8 +9,9 @@
         document.documentElement.classList.add("sidebar-collapsed");
     } catch (e) {}
   </script>
-  <title>CRM — {{ fio or 'Кабинет' }}</title>
+  <title>Журнал записей — {{ fio or 'CRM' }}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='sidebar.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='online-booking.css') }}">
 </head>
 <body>
   <aside class="sidebar">
@@ -27,22 +28,23 @@
     </div>
     <nav class="sidebar-nav">
       {% for item in menu %}
-      <a href="{{ item.href }}" class="nav-item">
+      <a href="{{ item.href }}" class="nav-item {% if item.href == '/online-booking/journal' %}active{% endif %}">
         <span class="nav-icon">{{ item.icon }}</span>
         <span class="nav-text">{{ item.text }}</span>
       </a>
       {% endfor %}
     </nav>
   </aside>
+
   <main class="content">
-    <header class="content-header">
-      <h1>Главная</h1>
-      <p>Тестовый веб-интерфейс. Кнопки слева соответствуют вашей роли ({{ role }}, {{ sphere }}). Позже сюда можно перенести полный функционал с отдельного хоста.</p>
-    </header>
-    <div class="content-body">
-      <p>Вы вошли в систему. Меню слева отображается в зависимости от роли и сферы (медицина / бизнес).</p>
+    <h1>Журнал записей</h1>
+    <div class="toolbar">
+      <label>Дата: <input id="journal-date" type="date"></label>
+      <button id="journal-refresh">Обновить</button>
     </div>
+    <div id="journal-list" class="list"></div>
   </main>
   <script src="{{ url_for('static', filename='sidebar.js') }}"></script>
+  <script src="{{ url_for('static', filename='online-booking-journal.js') }}"></script>
 </body>
 </html>

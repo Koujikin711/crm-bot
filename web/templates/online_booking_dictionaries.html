@@ -9,8 +9,9 @@
         document.documentElement.classList.add("sidebar-collapsed");
     } catch (e) {}
   </script>
-  <title>CRM — {{ fio or 'Кабинет' }}</title>
+  <title>Справочники — {{ fio or 'CRM' }}</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='sidebar.css') }}">
+  <link rel="stylesheet" href="{{ url_for('static', filename='online-booking.css') }}">
 </head>
 <body>
   <aside class="sidebar">
@@ -27,22 +28,41 @@
     </div>
     <nav class="sidebar-nav">
       {% for item in menu %}
-      <a href="{{ item.href }}" class="nav-item">
+      <a href="{{ item.href }}" class="nav-item {% if item.href == '/online-booking/dictionaries' %}active{% endif %}">
         <span class="nav-icon">{{ item.icon }}</span>
         <span class="nav-text">{{ item.text }}</span>
       </a>
       {% endfor %}
     </nav>
   </aside>
+
   <main class="content">
-    <header class="content-header">
-      <h1>Главная</h1>
-      <p>Тестовый веб-интерфейс. Кнопки слева соответствуют вашей роли ({{ role }}, {{ sphere }}). Позже сюда можно перенести полный функционал с отдельного хоста.</p>
-    </header>
-    <div class="content-body">
-      <p>Вы вошли в систему. Меню слева отображается в зависимости от роли и сферы (медицина / бизнес).</p>
+    <h1>Справочники</h1>
+    <div class="dict-grid">
+      <section class="panel">
+        <h2>Направления</h2>
+        <form id="dir-form" class="inline-form">
+          <input id="dir-name" placeholder="Название" required>
+          <input id="dir-duration" type="number" min="10" step="5" value="30" required>
+          <button type="submit">Добавить</button>
+        </form>
+        <div id="dir-list" class="list"></div>
+      </section>
+
+      <section class="panel">
+        <h2>Специалисты</h2>
+        <form id="spec-form" class="inline-form">
+          <input id="spec-name" placeholder="ФИО" required>
+          <select id="spec-direction" required></select>
+          <input id="spec-phone" placeholder="Телефон">
+          <button type="submit">Добавить</button>
+        </form>
+        <div id="spec-list" class="list"></div>
+      </section>
     </div>
+    <p id="dict-msg" class="hint"></p>
   </main>
   <script src="{{ url_for('static', filename='sidebar.js') }}"></script>
+  <script src="{{ url_for('static', filename='online-booking-dicts.js') }}"></script>
 </body>
 </html>
