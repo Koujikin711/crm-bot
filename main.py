@@ -30,6 +30,48 @@ BIZ_LEAD_COND = "(direction = 'biz' OR direction IS NULL OR TRIM(COALESCE(direct
 # Тестовые лиды (phone LIKE 'TEST_%') не учитываются в статистике
 NOT_TEST_LEAD_COND = " AND (phone NOT LIKE 'TEST_%')"
 
+def _ensure_biz_lead_pool_ready():
+    """
+    Авто-починка для прод-сборок, где нет консоли/миграций.
+
+    Если бизнес-лиды включены, но пул менеджеров пустой (из-за can_receive_leads=0 у всех),
+    новые лиды будут падать в pending NULL. Здесь мы мягко исправляем это:
+    - если eligible-пул = 0, но бизнес-менеджеры существуют → включаем can_receive_leads=1 всем biz-manager.
+    - если leads_enabled = 0 и пула нет → включаем leads_enabled=1 (иначе бизнес всегда "мертвый").
+
+    В остальных случаях ничего не трогаем, чтобы не ломать ручные настройки.
+    """
+    try:
+        # Есть ли вообще менеджеры бизнеса
+        total_mgr = execute_query(
+            "SELECT COUNT(*) FROM users WHERE LOWER(role)='manager' AND (sphere='biz' OR sphere IS NULL OR TRIM(COALESCE(sphere,''))='')",
+            (),
+            fetchone=True,
+        )
+        total_mgr = int(total_mgr[0] or 0) if total_mgr else 0
+
+        # Есть ли кто-то eligible (как в pick_manager_for_new_lead для biz)
+        eligible = execute_query(
+            "SELECT COUNT(*) FROM users u WHERE (LOWER(u.role)='manager' AND (u.sphere='biz' OR u.sphere IS NULL OR TRIM(COALESCE(u.sphere,''))='') AND COALESCE(u.can_receive_leads,1)=1) OR (LOWER(u.role)='admin' AND (u.sphere='biz' OR u.sphere IS NULL OR TRIM(COALESCE(u.sphere,''))='') AND COALESCE(u.can_receive_leads,0)=1)",
+            (),
+            fetchone=True,
+        )
+        eligible = int(eligible[0] or 0) if eligible else 0
+
+        if total_mgr > 0 and eligible == 0:
+            execute_query(
+                "UPDATE users SET can_receive_leads=1 WHERE LOWER(role)='manager' AND (sphere='biz' OR sphere IS NULL OR TRIM(COALESCE(sphere,''))='')",
+                (),
+            )
+            logging.warning("[CRM] biz lead pool auto-fix: enabled can_receive_leads=1 for biz managers (count=%s)", total_mgr)
+
+        l_on = execute_query("SELECT value FROM settings WHERE key = 'leads_enabled'", (), fetchone=True)
+        if l_on is not None and str(l_on[0]).strip() == "0" and (total_mgr > 0 and eligible == 0):
+            execute_query("INSERT OR REPLACE INTO settings (key, value) VALUES ('leads_enabled', '1')", ())
+            logging.warning("[CRM] biz lead pool auto-fix: enabled leads_enabled=1")
+    except Exception as e:
+        logging.warning("[CRM] biz lead pool auto-fix failed: %s", e)
+
 
 def _append_biz_lead_to_sheet(date_str, fio, phone, vid_biznesa, bol_klienta, kommentariy, perezvon, status_text):
     """Добавить строку в Google Sheet «База данных лидов». Вызывать из потока (sync).
@@ -3867,6 +3909,7 @@ async def main():
     global g_http_session
     g_http_session = aiohttp.ClientSession()
     init_db()
+    _ensure_biz_lead_pool_ready()
     # Проверка: под каким ботом запущено (чтобы не перепутать токен с другим ботом, например @AIBUTTNUDEBOT)
     try:
         me = await bot.get_me()
