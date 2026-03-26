@@ -412,12 +412,15 @@ def api_booking_add_direction():
 @login_required
 @booking_access_required
 def api_booking_specialists():
+    include_all = str(request.args.get("all", "")).strip().lower() in ("1", "true", "yes")
+    where = "" if include_all else " WHERE s.is_active = 1 "
     rows = execute_query(
-        """SELECT s.id, s.full_name, s.direction_id, d.name, s.phone, s.is_active,
+        f"""SELECT s.id, s.full_name, s.direction_id, d.name, s.phone, s.is_active,
                   s.specialty_label, s.work_days, s.work_time_from, s.work_time_to,
                   s.work_schedule_note, s.default_duration_min
            FROM medical_specialists s
            LEFT JOIN medical_directions d ON d.id = s.direction_id
+           {where}
            ORDER BY s.id DESC""",
         fetchall=True,
     )
@@ -477,6 +480,69 @@ def api_booking_add_specialist():
         ),
     )
     return jsonify({"ok": True}), 201
+
+
+@app.patch("/web-api/booking/specialists/<int:specialist_id>")
+@login_required
+@booking_access_required
+def api_booking_patch_specialist(specialist_id: int):
+    body = request.get_json(silent=True) or {}
+    row = execute_query(
+        "SELECT id FROM medical_specialists WHERE id = ?",
+        (specialist_id,),
+        fetchone=True,
+    )
+    if not row:
+        return jsonify({"detail": "Врач не найден"}), 404
+    full_name = str(body.get("full_name", "")).strip()
+    direction_id = int(body.get("direction_id") or 0)
+    phone = str(body.get("phone", "")).strip()
+    specialty_label = str(body.get("specialty_label", "")).strip()
+    work_days = str(body.get("work_days", "1,2,3,4,5")).strip() or "1,2,3,4,5"
+    work_time_from = str(body.get("work_time_from", "09:00")).strip() or "09:00"
+    work_time_to = str(body.get("work_time_to", "18:00")).strip() or "18:00"
+    work_schedule_note = str(body.get("work_schedule_note", "")).strip()
+    raw_dur = body.get("default_duration_min")
+    default_duration_min = int(raw_dur) if raw_dur not in (None, "", []) else None
+    if not full_name or not direction_id:
+        return jsonify({"detail": "full_name and direction_id are required"}), 400
+    execute_query(
+        """UPDATE medical_specialists SET
+           full_name = ?, direction_id = ?, phone = ?, specialty_label = ?, work_days = ?,
+           work_time_from = ?, work_time_to = ?, work_schedule_note = ?, default_duration_min = ?
+           WHERE id = ?""",
+        (
+            full_name,
+            direction_id,
+            phone,
+            specialty_label or None,
+            work_days,
+            work_time_from,
+            work_time_to,
+            work_schedule_note or None,
+            default_duration_min,
+            specialist_id,
+        ),
+    )
+    return jsonify({"ok": True})
+
+
+@app.route("/web-api/booking/specialists/<int:specialist_id>", methods=["DELETE"])
+@login_required
+@booking_access_required
+def api_booking_delete_specialist(specialist_id: int):
+    row = execute_query(
+        "SELECT id FROM medical_specialists WHERE id = ?",
+        (specialist_id,),
+        fetchone=True,
+    )
+    if not row:
+        return jsonify({"detail": "Врач не найден"}), 404
+    execute_query(
+        "UPDATE medical_specialists SET is_active = 0 WHERE id = ?",
+        (specialist_id,),
+    )
+    return jsonify({"ok": True})
 
 
 @app.get("/web-api/booking/appointments")

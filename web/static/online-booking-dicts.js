@@ -23,7 +23,7 @@ async function loadDirections() {
 }
 
 async function loadSpecialists() {
-  const specs = await j("/web-api/booking/specialists");
+  const specs = await j("/web-api/booking/specialists?all=1");
   document.getElementById("spec-list").innerHTML = specs
     .map((s) => `<div class="item"><b>${s.full_name}</b> — ${s.direction_name || "-"} ${s.phone || ""}</div>`)
     .join("");

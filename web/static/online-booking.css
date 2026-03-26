@@ -289,13 +289,103 @@
   font-weight: 600;
   font-size: 11px;
   background: #fafbfc;
-  box-shadow: 1px 0 0 var(--bx-grid-line, #ebebeb);
+  /* Только border-right из общего правила — без второй «полоски» у колонки «Время» */
 }
 
 .sched-body {
   display: grid;
   padding-bottom: 72px;
   grid-auto-rows: minmax(32px, auto);
+}
+
+/* Ячейка заголовка: текст + меню «⋯», без лишних внутренних границ */
+.sched-head-resource {
+  justify-content: flex-start !important;
+  align-items: flex-start !important;
+  gap: 6px;
+}
+
+.sched-resource-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  text-align: left;
+  border: none;
+  box-shadow: none;
+}
+
+.sched-head-actions {
+  flex-shrink: 0;
+  display: flex;
+  align-items: flex-start;
+  padding-top: 0;
+}
+
+.sched-kebab {
+  border: none;
+  background: transparent;
+  color: var(--bx-text-muted, #858fa4);
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  letter-spacing: 0.02em;
+  padding: 0;
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.sched-kebab:hover,
+.sched-kebab:focus-visible {
+  background: #eef1f5;
+  color: var(--bx-text, #333);
+  outline: none;
+}
+
+.sched-spec-menu {
+  position: fixed;
+  z-index: 300;
+  min-width: 160px;
+  padding: 4px;
+  background: #fff;
+  border: 1px solid var(--bx-grid-line, #ebebeb);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(15, 23, 42, 0.12), 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+
+.sched-spec-menu.is-hidden {
+  display: none;
+}
+
+.sched-spec-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  border: none;
+  background: none;
+  font: inherit;
+  font-size: 13px;
+  padding: 8px 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--bx-text, #333);
+}
+
+.sched-spec-menu-item:hover {
+  background: #f4f6f8;
+}
+
+.sched-spec-menu-item-danger {
+  color: #b42318;
+}
+
+.sched-spec-menu-item-danger:hover {
+  background: #fef2f2;
 }
 
 .sched-resource-head {

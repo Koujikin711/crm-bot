@@ -198,32 +198,68 @@ async def safe_callback_answer(c: types.CallbackQuery, text: str = None):
         if "query is too old" not in str(e).lower() and "query id is invalid" not in str(e).lower():
             raise
 
+def _fetch_next_pending_for_manager(manager_id: int, direction: str):
+    """
+    Сначала личная очередь менеджера (pending + уже зарезервированный manager_id),
+    затем общая очередь (pending + manager_id IS NULL) — как раньше.
+    Возвращает (phone, name, from_personal_queue: bool) или (None, None, False).
+    """
+    if direction == "med":
+        cond = "direction = 'med'"
+    else:
+        cond = BIZ_LEAD_COND
+    row = execute_query(
+        f"SELECT phone, name FROM leads WHERE status = 'pending' AND {cond} AND manager_id = ? ORDER BY last_touch ASC LIMIT 1",
+        (manager_id,),
+        fetchone=True,
+    )
+    if row:
+        return row[0], row[1] or row[0], True
+    row = execute_query(
+        f"SELECT phone, name FROM leads WHERE status = 'pending' AND {cond} AND manager_id IS NULL ORDER BY last_touch ASC LIMIT 1",
+        (),
+        fetchone=True,
+    )
+    if row:
+        return row[0], row[1] or row[0], False
+    return None, None, False
+
+
 async def try_assign_queued_lead_to_manager(manager_id: int, direction: str):
-    """После закрытия лида: если есть лид в очереди (status=pending), назначить его этому менеджеру. Для бизнеса — только если глобально лиды включены."""
+    """После закрытия лида: сначала личная очередь менеджера, затем общая pending. Для бизнеса — только если глобально лиды включены."""
     if is_owner(manager_id):
         return
     if direction != 'med':
         l_on = execute_query("SELECT value FROM settings WHERE key = 'leads_enabled'", fetchone=True)
         if l_on is not None and str(l_on[0]).strip() == '0':
             return
-    if direction == 'med':
-        cond = "direction = 'med'"
-    else:
-        cond = BIZ_LEAD_COND
-    row = execute_query(
-        f"SELECT phone, name FROM leads WHERE status = 'pending' AND {cond} ORDER BY last_touch ASC LIMIT 1",
-        (),
-        fetchone=True,
-    )
-    if not row:
+    phone, name, personal = _fetch_next_pending_for_manager(manager_id, direction)
+    if not phone:
         logging.info("[CRM] try_assign: нет лидов в очереди (direction=%s), менеджер %s", direction, manager_id)
         return
-    phone, name = row[0], row[1] or row[0]
-    # Атомарно занять лид: только если он всё ещё pending (иначе другой менеджер уже взял)
+    now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     if direction == 'med':
-        execute_query("UPDATE leads SET manager_id = ?, status = 'active' WHERE phone = ? AND status = 'pending' AND direction = 'med'", (manager_id, phone))
+        if personal:
+            execute_query(
+                "UPDATE leads SET status = 'active', last_touch = ? WHERE phone = ? AND status = 'pending' AND manager_id = ? AND direction = 'med'",
+                (now_iso, phone, manager_id),
+            )
+        else:
+            execute_query(
+                "UPDATE leads SET manager_id = ?, status = 'active', last_touch = ? WHERE phone = ? AND status = 'pending' AND manager_id IS NULL AND direction = 'med'",
+                (manager_id, now_iso, phone),
+            )
     else:
-        execute_query("UPDATE leads SET manager_id = ?, status = 'active' WHERE phone = ? AND status = 'pending' AND (direction = 'biz' OR direction IS NULL)", (manager_id, phone))
+        if personal:
+            execute_query(
+                "UPDATE leads SET status = 'active', last_touch = ? WHERE phone = ? AND status = 'pending' AND manager_id = ? AND (direction = 'biz' OR direction IS NULL)",
+                (now_iso, phone, manager_id),
+            )
+        else:
+            execute_query(
+                "UPDATE leads SET manager_id = ?, status = 'active', last_touch = ? WHERE phone = ? AND status = 'pending' AND manager_id IS NULL AND (direction = 'biz' OR direction IS NULL)",
+                (manager_id, now_iso, phone),
+            )
     check = execute_query("SELECT manager_id FROM leads WHERE phone = ?", (phone,), fetchone=True)
     if not check or check[0] != manager_id:
         logging.info("[CRM] try_assign: лид %s уже взят другим менеджером, пропуск для %s", phone, manager_id)
@@ -236,32 +272,78 @@ async def try_assign_queued_lead_to_manager(manager_id: int, direction: str):
     except Exception as e:
         logging.exception("[CRM] try_assign: не удалось отправить лид менеджеру %s: %s", manager_id, e)
         if direction == 'med':
-            execute_query("UPDATE leads SET manager_id = NULL, status = 'pending' WHERE phone = ? AND direction = 'med'", (phone,))
+            execute_query(
+                "UPDATE leads SET status = 'pending', last_touch = ? WHERE phone = ? AND direction = 'med' AND manager_id = ?",
+                (now_iso, phone, manager_id),
+            )
         else:
-            execute_query("UPDATE leads SET manager_id = NULL, status = 'pending' WHERE phone = ? AND (direction = 'biz' OR direction IS NULL)", (phone,))
+            execute_query(
+                "UPDATE leads SET status = 'pending', last_touch = ? WHERE phone = ? AND (direction = 'biz' OR direction IS NULL) AND manager_id = ?",
+                (now_iso, phone, manager_id),
+            )
         execute_query("UPDATE users SET is_busy = 0 WHERE user_id = ?", (manager_id,))
 
 async def distribute_pending_biz_leads() -> int:
-    """Распределить все pending-лиды бизнеса по свободным менеджерам. Возвращает число назначенных.
-    Атомарность: после UPDATE проверяем, что лид достался именно нам (иначе другой процесс уже назначил — не шлём дубль)."""
+    """Раздать pending бизнеса: сначала зарезервированные под конкретного менеджера (если он свободен), затем общую очередь (manager_id NULL) по свободным."""
     cond = BIZ_LEAD_COND
+    biz_busy = "(x.direction = 'biz' OR x.direction IS NULL OR TRIM(COALESCE(x.direction,''))='')"
     assigned = 0
     while True:
         row = execute_query(
-            f"SELECT phone, name FROM leads WHERE status = 'pending' AND {cond} ORDER BY last_touch ASC LIMIT 1",
+            f"""SELECT l.phone, l.name, l.manager_id FROM leads l
+                WHERE l.status = 'pending' AND {cond}
+                  AND l.manager_id IS NOT NULL
+                  AND NOT EXISTS (
+                    SELECT 1 FROM leads x
+                    WHERE x.manager_id = l.manager_id
+                      AND x.status IN ('active','chatting')
+                      AND {biz_busy}
+                  )
+                ORDER BY l.last_touch ASC LIMIT 1""",
+            (),
+            fetchone=True,
+        )
+        if row:
+            phone, name, target = row[0], row[1] or row[0], row[2]
+            now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            execute_query(
+                "UPDATE leads SET status = 'active', last_touch = ? WHERE phone = ? AND status = 'pending' AND manager_id = ? AND (direction = 'biz' OR direction IS NULL)",
+                (now_iso, phone, target),
+            )
+            check = execute_query("SELECT manager_id, status FROM leads WHERE phone = ?", (phone,), fetchone=True)
+            if not check or check[0] != target or check[1] != "active":
+                logging.info("[CRM] distribute_pending_biz: лид %s (reserved) не активирован, пропуск", phone)
+                continue
+            execute_query("UPDATE users SET is_busy = 1 WHERE user_id = ?", (target,))
+            kb = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone[:30]}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone[:30]}").adjust(2).as_markup()
+            try:
+                await bot.send_message(target, f"📥 <b>Лид из очереди</b>\n👤 {name}\n📞 {phone}", reply_markup=kb, parse_mode="HTML")
+                assigned += 1
+                logging.info("[CRM] distribute_pending_biz: reserved лид %s -> менеджер %s", phone, target)
+            except Exception as e:
+                logging.exception("[CRM] distribute_pending_biz: отправка менеджеру %s: %s", target, e)
+                execute_query(
+                    "UPDATE leads SET status = 'pending', last_touch = ? WHERE phone = ? AND manager_id = ? AND (direction = 'biz' OR direction IS NULL)",
+                    (now_iso, phone, target),
+                )
+                execute_query("UPDATE users SET is_busy = 0 WHERE user_id = ?", (target,))
+                break
+            continue
+        row = execute_query(
+            f"SELECT phone, name FROM leads WHERE status = 'pending' AND {cond} AND manager_id IS NULL ORDER BY last_touch ASC LIMIT 1",
             (),
             fetchone=True,
         )
         if not row:
             break
         phone, name = row[0], row[1] or row[0]
-        target = get_free_manager_for_direction('biz')
+        target = get_free_manager_for_direction("biz")
         if not target:
             logging.info("[CRM] distribute_pending_biz: свободных менеджеров нет, осталось в очереди")
             break
         now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         execute_query(
-            "UPDATE leads SET manager_id = ?, status = 'active', last_touch = ? WHERE phone = ? AND status = 'pending' AND (direction = 'biz' OR direction IS NULL)",
+            "UPDATE leads SET manager_id = ?, status = 'active', last_touch = ? WHERE phone = ? AND status = 'pending' AND manager_id IS NULL AND (direction = 'biz' OR direction IS NULL)",
             (target, now_iso, phone),
         )
         check = execute_query("SELECT manager_id FROM leads WHERE phone = ?", (phone,), fetchone=True)
@@ -297,6 +379,57 @@ def get_free_manager_for_direction(direction: str):
             WHERE ({role_cond})
             AND NOT EXISTS (SELECT 1 FROM leads l WHERE l.manager_id = u.user_id AND l.status IN ('active', 'chatting') AND ({lead_cond}))
             ORDER BY u.user_id LIMIT 1""",
+        (),
+        fetchone=True,
+    )
+    return row[0] if row else None
+
+
+def manager_is_free_for_direction(user_id: int, direction: str) -> bool:
+    """Нет активного диалога (active/chatting) по этому направлению — можно выдать новый лид сразу."""
+    if direction == "med":
+        lead_cond = "direction = 'med'"
+    else:
+        lead_cond = BIZ_LEAD_COND
+    row = execute_query(
+        f"SELECT 1 FROM leads WHERE manager_id = ? AND status IN ('active', 'chatting') AND ({lead_cond}) LIMIT 1",
+        (user_id,),
+        fetchone=True,
+    )
+    return not row
+
+
+def pick_manager_for_new_lead(direction: str):
+    """
+    Равномерное распределение: выбираем менеджера с минимальной «нагрузкой».
+    В нагрузку входят active + chatting + pending (в т.ч. личная очередь ожидания с зарезервированным manager_id).
+    При равной нагрузке — стабильный порядок по user_id.
+    """
+    if direction == "med":
+        role_cond = "LOWER(u.role)='manager' AND u.sphere='med'"
+        lead_scope = "(l.direction = 'med')"
+    else:
+        l_on = execute_query("SELECT value FROM settings WHERE key = 'leads_enabled'", fetchone=True)
+        if l_on is not None and str(l_on[0]).strip() == "0":
+            return None
+        role_cond = (
+            "(LOWER(u.role)='manager' AND (u.sphere='biz' OR u.sphere IS NULL OR TRIM(COALESCE(u.sphere,''))='') "
+            "AND COALESCE(u.can_receive_leads,1)=1) OR "
+            "(LOWER(u.role)='admin' AND (u.sphere='biz' OR u.sphere IS NULL OR TRIM(COALESCE(u.sphere,''))='') "
+            "AND COALESCE(u.can_receive_leads,0)=1)"
+        )
+        lead_scope = "(l.direction = 'biz' OR l.direction IS NULL OR TRIM(COALESCE(l.direction,''))='')"
+    row = execute_query(
+        f"""SELECT u.user_id FROM users u
+            WHERE ({role_cond})
+            ORDER BY (
+              SELECT COUNT(*) FROM leads l
+              WHERE l.manager_id = u.user_id
+                AND l.status IN ('active','chatting','pending')
+                AND {lead_scope}
+                AND (l.phone NOT LIKE 'TEST_%')
+            ) ASC, u.user_id ASC
+            LIMIT 1""",
         (),
         fetchone=True,
     )
@@ -830,14 +963,34 @@ async def _process_wa_instance(instance_name, base_url, instance_id, token):
                             logging.info("%s: лид %s переназначен свободному менеджеру %s", instance_name.upper(), phone, target)
                             print(f"[CRM] {instance_name.upper()}: лид {phone} переназначен менеджеру {target}")
                         else:
-                            execute_query("UPDATE leads SET manager_id = NULL, status = 'pending' WHERE phone = ? AND (direction = ? OR direction IS NULL)", (phone, instance_name))
+                            rr = pick_manager_for_new_lead(instance_name)
+                            if rr:
+                                execute_query(
+                                    "UPDATE leads SET manager_id = ?, status = 'pending' WHERE phone = ? AND (direction = ? OR direction IS NULL)",
+                                    (rr, phone, instance_name),
+                                )
+                            else:
+                                execute_query(
+                                    "UPDATE leads SET manager_id = NULL, status = 'pending' WHERE phone = ? AND (direction = ? OR direction IS NULL)",
+                                    (phone, instance_name),
+                                )
                             await _wa_delete(delete_url + "/" + str(rid))
                             processed_this_cycle += 1
                             continue
                     # Если менеджер сейчас в диалоге с ДРУГИМ клиентом — этот лид не перебиваем: в очередь, сообщение не пересылаем.
                     session = execute_query("SELECT phone FROM chat_sessions WHERE user_id = ?", (mgr_id,), fetchone=True)
                     if session and session[0] != phone:
-                        execute_query("UPDATE leads SET manager_id = NULL, status = 'pending' WHERE phone = ? AND (direction = ? OR direction IS NULL)", (phone, instance_name))
+                        rr = pick_manager_for_new_lead(instance_name)
+                        if rr:
+                            execute_query(
+                                "UPDATE leads SET manager_id = ?, status = 'pending' WHERE phone = ? AND (direction = ? OR direction IS NULL)",
+                                (rr, phone, instance_name),
+                            )
+                        else:
+                            execute_query(
+                                "UPDATE leads SET manager_id = NULL, status = 'pending' WHERE phone = ? AND (direction = ? OR direction IS NULL)",
+                                (phone, instance_name),
+                            )
                         execute_query("DELETE FROM chat_sessions WHERE user_id = ? AND phone = ?", (mgr_id, phone))
                         await _wa_delete(delete_url + "/" + str(rid))
                         processed_this_cycle += 1
@@ -949,9 +1102,9 @@ async def _process_wa_instance(instance_name, base_url, instance_id, token):
                         if c_name == '[Файл/голос]':
                             c_name = 'Клиент'
                         execute_query("DELETE FROM auth_queue WHERE phone = ?", (phone,))
-                        target = get_free_manager_for_direction(instance_name)
-                        if target:
-                            now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        target = pick_manager_for_new_lead(instance_name)
+                        now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        if target and manager_is_free_for_direction(target, instance_name):
                             execute_query("UPDATE users SET is_busy=1 WHERE user_id=?", (target,))
                             execute_query(
                                 "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at, source) VALUES (?, ?, 'active', ?, ?, 1, ?, ?, 'WhatsApp')",
@@ -965,14 +1118,20 @@ async def _process_wa_instance(instance_name, base_url, instance_id, token):
                             except Exception as e:
                                 logging.exception("send_message to manager %s failed: %s", target, e)
                                 print(f"[CRM] Ошибка отправки карточки менеджеру {target}: {e}")
+                        elif target:
+                            execute_query(
+                                "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at, source) VALUES (?, ?, 'pending', ?, ?, 1, ?, ?, 'WhatsApp')",
+                                (phone, c_name, target, now_iso, instance_name, now_iso),
+                            )
+                            logging.warning("%s: lead %s в личной очереди менеджера %s (pending)", instance_name, phone, target)
+                            print(f"[CRM] {instance_name}: лид {phone} в очереди → менеджер {target}")
                         else:
-                            now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                             execute_query(
                                 "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at, source) VALUES (?, ?, 'pending', NULL, ?, 1, ?, ?, 'WhatsApp')",
                                 (phone, c_name, now_iso, instance_name, now_iso),
                             )
-                            logging.warning("%s: all busy, lead %s in queue (pending)", instance_name, phone)
-                            print(f"[CRM] {instance_name}: все заняты, лид {phone} в очереди")
+                            logging.warning("%s: no manager pool, lead %s pending (NULL)", instance_name, phone)
+                            print(f"[CRM] {instance_name}: нет менеджеров для распределения, лид {phone} в общей очереди")
                             try:
                                 await asyncio.sleep(0.3)
                             except Exception:
@@ -1002,18 +1161,24 @@ async def _on_telegram_lead_message(peer_id: int, name: str, text: str, has_medi
     now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     row = execute_query("SELECT manager_id FROM leads WHERE phone = ?", (phone,), fetchone=True)
     if not row:
-        target = get_free_manager_for_direction('biz')
-        if target:
-            recheck = execute_query("SELECT manager_id FROM leads WHERE phone = ?", (phone,), fetchone=True)
-            if recheck:
-                mgr_id_r = recheck[0]
-                kb_r = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone[:30]}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone[:30]}").adjust(2).as_markup()
-                try:
-                    await bot.send_message(mgr_id_r, f"💬 <b>{name}</b> (Telegram):\n{text}", reply_markup=kb_r, parse_mode="HTML")
-                except Exception:
-                    pass
-                execute_query("UPDATE leads SET last_touch = ? WHERE phone = ?", (now_iso, phone))
-                log_lead_event(phone, "incoming", (text or "[медиа]")[:200], None)
+        target = pick_manager_for_new_lead("biz")
+
+        async def _tg_forward_existing():
+            rec = execute_query("SELECT manager_id FROM leads WHERE phone = ?", (phone,), fetchone=True)
+            if not rec:
+                return False
+            mgr_id_r = rec[0]
+            kb_r = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone[:30]}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone[:30]}").adjust(2).as_markup()
+            try:
+                await bot.send_message(mgr_id_r, f"💬 <b>{name}</b> (Telegram):\n{text}", reply_markup=kb_r, parse_mode="HTML")
+            except Exception:
+                pass
+            execute_query("UPDATE leads SET last_touch = ? WHERE phone = ?", (now_iso, phone))
+            log_lead_event(phone, "incoming", (text or "[медиа]")[:200], None)
+            return True
+
+        if target and manager_is_free_for_direction(target, "biz"):
+            if await _tg_forward_existing():
                 return
             execute_query("UPDATE users SET is_busy=1 WHERE user_id=?", (target,))
             execute_query(
@@ -1026,12 +1191,22 @@ async def _on_telegram_lead_message(peer_id: int, name: str, text: str, has_medi
             except Exception as e:
                 logging.exception("tg_lead send to manager %s: %s", target, e)
             logging.info("tg_lead: new lead %s -> manager %s", phone, target)
+        elif target:
+            if await _tg_forward_existing():
+                return
+            execute_query(
+                "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at, source) VALUES (?, ?, 'pending', ?, ?, 1, 'biz', ?, 'Telegram')",
+                (phone, name, target, now_iso, now_iso),
+            )
+            logging.warning("tg_lead: lead %s в очереди менеджера %s (pending)", phone, target)
         else:
+            if await _tg_forward_existing():
+                return
             execute_query(
                 "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at, source) VALUES (?, ?, 'pending', NULL, ?, 1, 'biz', ?, 'Telegram')",
                 (phone, name, now_iso, now_iso),
             )
-            logging.warning("tg_lead: all busy, lead %s in queue", phone)
+            logging.warning("tg_lead: no manager pool, lead %s pending NULL", phone)
     else:
         mgr_id = row[0]
         kb = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone[:30]}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone[:30]}").adjust(2).as_markup()

@@ -129,12 +129,18 @@
     </div>
   </aside>
 
+  <div id="sched-spec-menu" class="sched-spec-menu is-hidden" role="menu" aria-hidden="true">
+    <button type="button" class="sched-spec-menu-item" id="sched-spec-menu-edit" role="menuitem">Редактировать</button>
+    <button type="button" class="sched-spec-menu-item sched-spec-menu-item-danger" id="sched-spec-menu-delete" role="menuitem">Удалить</button>
+  </div>
+
   <aside id="spec-drawer" class="booking-drawer is-hidden" aria-hidden="true">
     <div class="booking-drawer-head">
-      <h2>Новый врач / ресурс</h2>
+      <h2 id="sd-title">Новый врач / ресурс</h2>
       <button type="button" class="drawer-close" id="sd-close" aria-label="Закрыть">×</button>
     </div>
     <form id="form-add-spec" class="booking-drawer-body">
+      <input type="hidden" id="sd-edit-id" value="">
       <label>ФИО врача
         <input name="full_name" required placeholder="Иванов Иван Иванович">
       </label>
@@ -172,7 +178,7 @@
         <label><input type="checkbox" name="wd" value="7"> Вс</label>
       </fieldset>
       <p id="sd-msg" class="hint"></p>
-      <button type="submit">Добавить врача</button>
+      <button type="submit" id="sd-submit-btn">Добавить врача</button>
     </form>
   </aside>
 

@@ -42,6 +42,7 @@ function specialistSubtitle(sp) {
 }
 
 let currentAppointmentId = null;
+let activeSpecMenuId = null;
 
 function drawerBackdrop() {
   return document.getElementById("drawer-backdrop");
@@ -52,6 +53,25 @@ function closeDrawers() {
   document.getElementById("spec-drawer")?.classList.add("is-hidden");
   drawerBackdrop()?.classList.add("is-hidden");
   currentAppointmentId = null;
+}
+
+function closeSpecMenu() {
+  const menu = document.getElementById("sched-spec-menu");
+  if (!menu) return;
+  menu.classList.add("is-hidden");
+  menu.setAttribute("aria-hidden", "true");
+  activeSpecMenuId = null;
+}
+
+function openSpecMenuAt(specialistId, anchorEl) {
+  const menu = document.getElementById("sched-spec-menu");
+  if (!menu || !anchorEl) return;
+  const rect = anchorEl.getBoundingClientRect();
+  menu.style.left = `${Math.round(rect.right - 156)}px`;
+  menu.style.top = `${Math.round(rect.bottom + 6)}px`;
+  menu.classList.remove("is-hidden");
+  menu.setAttribute("aria-hidden", "false");
+  activeSpecMenuId = Number(specialistId);
 }
 
 function openDrawersCommon() {
@@ -92,8 +112,9 @@ async function openClientDrawer(apptId) {
   document.getElementById("cd-status").value = a.status || "booked";
 }
 
-function openSpecDrawer() {
+function openSpecDrawer(spec) {
   openDrawersCommon();
+  closeSpecMenu();
   document.getElementById("client-drawer")?.classList.add("is-hidden");
   const panel = document.getElementById("spec-drawer");
   panel.classList.remove("is-hidden");
@@ -101,7 +122,11 @@ function openSpecDrawer() {
   sel.innerHTML = state.directions
     .map((d) => `<option value="${d.id}">${esc(d.name)} (${d.duration_min} мин)</option>`)
     .join("");
-  document.getElementById("form-add-spec").reset();
+  const form = document.getElementById("form-add-spec");
+  const editId = document.getElementById("sd-edit-id");
+  const title = document.getElementById("sd-title");
+  const submit = document.getElementById("sd-submit-btn");
+  form.reset();
   document.getElementById("sd-msg").textContent = "";
   ["1", "2", "3", "4", "5"].forEach((v) => {
     const el = document.querySelector(`#form-add-spec input[name="wd"][value="${v}"]`);
@@ -115,6 +140,30 @@ function openSpecDrawer() {
   const wt = document.querySelector('#form-add-spec input[name="work_time_to"]');
   if (wf) wf.value = "09:00";
   if (wt) wt.value = "18:00";
+  if (spec) {
+    if (title) title.textContent = "Редактировать врача / ресурс";
+    if (submit) submit.textContent = "Сохранить изменения";
+    if (editId) editId.value = String(spec.id);
+    form.elements.full_name.value = spec.full_name || "";
+    form.elements.specialty_label.value = spec.specialty_label || "";
+    form.elements.direction_id.value = String(spec.direction_id || "");
+    form.elements.phone.value = spec.phone || "";
+    form.elements.work_schedule_note.value = spec.work_schedule_note || "";
+    form.elements.work_time_from.value = spec.work_time_from || "09:00";
+    form.elements.work_time_to.value = spec.work_time_to || "18:00";
+    form.elements.default_duration_min.value = spec.default_duration_min || "";
+    const wd = String(spec.work_days || "1,2,3,4,5")
+      .split(",")
+      .map((x) => x.trim())
+      .filter(Boolean);
+    document.querySelectorAll('#form-add-spec input[name="wd"]').forEach((el) => {
+      el.checked = wd.includes(el.value);
+    });
+  } else {
+    if (title) title.textContent = "Новый врач / ресурс";
+    if (submit) submit.textContent = "Добавить врача";
+    if (editId) editId.value = "";
+  }
 }
 
 /** Единый формат для сопоставления слота в сетке и start_at из API (с секундами или без). */
@@ -273,7 +322,7 @@ function renderScheduler() {
         const sub = esc(specialistSubtitle(s));
         const name = esc(s.full_name);
         const dateLine = weekMode ? `<div class="sched-head-date">${esc(r.date)}</div>` : "";
-        return `<div class="sched-resource-head"><div class="sched-resource-name">${name}</div><div class="sched-resource-sub">${sub}</div>${dateLine}</div>`;
+        return `<div class="sched-head-resource"><div class="sched-resource-text"><div class="sched-resource-name">${name}</div><div class="sched-resource-sub">${sub}</div>${dateLine}</div><div class="sched-head-actions"><button type="button" class="sched-kebab" data-specialist-id="${s.id}" title="Действия">⋯</button></div></div>`;
       })
       .join("") +
     `<div class="sched-head-add"><button type="button" class="btn-add-resource" id="btn-open-spec-drawer">+ Добавить</button></div>`;
@@ -345,6 +394,18 @@ function renderScheduler() {
     e.preventDefault();
     openSpecDrawer();
   });
+  wrap.querySelectorAll(".sched-kebab").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const sid = Number(btn.dataset.specialistId || 0);
+      if (!sid) return;
+      if (activeSpecMenuId === sid) {
+        closeSpecMenu();
+        return;
+      }
+      openSpecMenuAt(sid, btn);
+    });
+  });
 
   for (const appt of state.appointments) {
     const startKey = normalizeSlotDt(appt.start_at);
@@ -398,10 +459,37 @@ function init() {
     dateInput.value = mini.value;
     loadAppointments();
   });
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest("#sched-spec-menu") && !e.target.closest(".sched-kebab")) {
+      closeSpecMenu();
+    }
+  });
 
   drawerBackdrop()?.addEventListener("click", closeDrawers);
   document.getElementById("cd-close")?.addEventListener("click", closeDrawers);
   document.getElementById("sd-close")?.addEventListener("click", closeDrawers);
+  document.getElementById("sched-spec-menu-edit")?.addEventListener("click", () => {
+    if (!activeSpecMenuId) return;
+    const spec = state.specialists.find((s) => Number(s.id) === Number(activeSpecMenuId));
+    if (!spec) return;
+    closeSpecMenu();
+    openSpecDrawer(spec);
+  });
+  document.getElementById("sched-spec-menu-delete")?.addEventListener("click", async () => {
+    if (!activeSpecMenuId) return;
+    const spec = state.specialists.find((s) => Number(s.id) === Number(activeSpecMenuId));
+    const label = spec?.full_name || "этого специалиста";
+    if (!confirm(`Удалить ${label}?`)) return;
+    try {
+      await j(`/web-api/booking/specialists/${activeSpecMenuId}`, { method: "DELETE" });
+      closeSpecMenu();
+      await loadSpecialists();
+      await loadAppointments();
+      setMsg("Специалист удалён", true);
+    } catch (err) {
+      setMsg(err.message, false);
+    }
+  });
 
   document.getElementById("cd-save-status")?.addEventListener("click", async () => {
     if (!currentAppointmentId) return;
@@ -443,8 +531,9 @@ function init() {
       default_duration_min: durNum != null && !Number.isNaN(durNum) ? durNum : null,
     };
     try {
-      await j("/web-api/booking/specialists", {
-        method: "POST",
+      const editId = Number(document.getElementById("sd-edit-id").value || 0);
+      await j(editId ? `/web-api/booking/specialists/${editId}` : "/web-api/booking/specialists", {
+        method: editId ? "PATCH" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
@@ -453,7 +542,7 @@ function init() {
       await loadSpecialists();
       await loadAppointments();
       closeDrawers();
-      setMsg("Врач добавлен", true);
+      setMsg(editId ? "Изменения сохранены" : "Врач добавлен", true);
     } catch (err) {
       msg.textContent = err.message;
       msg.className = "hint err";
