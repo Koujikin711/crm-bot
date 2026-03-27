@@ -29,6 +29,7 @@ from db import execute_query, init_db
 BIZ_LEAD_COND = "(direction = 'biz' OR direction IS NULL OR TRIM(COALESCE(direction,''))='')"
 # Тестовые лиды (phone LIKE 'TEST_%') не учитываются в статистике
 NOT_TEST_LEAD_COND = " AND (phone NOT LIKE 'TEST_%')"
+WEB_BOOKING_URL = (os.environ.get("CRM_WEB_BOOKING_URL") or "https://web--crm-metodi-koujikin.amvera.io/online-booking").strip()
 
 def _ensure_biz_lead_pool_ready():
     """
@@ -636,6 +637,7 @@ def get_main_menu(uid):
         kb.button(text="📊 Нагруженность"); kb.button(text="📈 Статистика лидов")
         kb.button(text="📅 Записать к Ганчине"); kb.button(text="📋 Лиды в работе"); kb.button(text="📥 Поступления лидов (мед)")
         kb.button(text="💬 Начать диалог"); kb.button(text="🔍 Поиск лида"); kb.button(text="📌 Доработать"); kb.button(text="💰 Оплаты"); kb.button(text="🔄 Продлить курс")
+        kb.button(text="🗓 Онлайн запись")
         kb.button(text="🎯 План/KPI")
         kb.button(text="◀ Назад в меню")
         kb.adjust(2)
@@ -660,6 +662,7 @@ def get_owner_med_menu():
     kb.button(text="📊 Нагруженность"); kb.button(text="📈 Статистика лидов")
     kb.button(text="👤 Назначить Админа"); kb.button(text="📂 Загрузка данных")
     kb.button(text="👑 Дать права владельца"); kb.button(text="💰 Приход"); kb.button(text="🎯 План/KPI"); kb.button(text="🎯 Поставить План")
+    kb.button(text="🗓 Онлайн запись")
     kb.button(text="📋 Лиды в работе"); kb.button(text="📥 Поступления лидов (мед)"); kb.button(text="💬 Начать диалог")
     kb.button(text="🔍 Поиск лида"); kb.button(text="📂 Выгрузка (мед)"); kb.button(text="📌 Доработать"); kb.button(text="🔥 Уволить"); kb.button(text="⏱ Время в работе"); kb.button(text="◀ Назад")
     kb.adjust(2)
@@ -1480,6 +1483,16 @@ async def owner_create_test_lead(m: types.Message, state: FSMContext):
 async def back_main(m: types.Message, state: FSMContext):
     await state.clear()
     await m.answer("Главное меню", reply_markup=get_main_menu(m.from_user.id))
+
+@dp.message(F.text == "🗓 Онлайн запись")
+async def open_web_booking(m: types.Message):
+    u = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (m.from_user.id,), fetchone=True)
+    if not u:
+        return
+    role, sphere = u[0], u[1]
+    if role == "owner" or (role == "admin" and sphere == "med"):
+        kb = InlineKeyboardBuilder().button(text="Открыть онлайн-запись", url=WEB_BOOKING_URL).as_markup()
+        await m.answer("🗓 Переход в онлайн-запись:", reply_markup=kb)
 
 # --- Бизнес: статистика (владелец — общая воронка; админ — за период) ---
 def _biz_leads_cond():
