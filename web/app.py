@@ -131,17 +131,7 @@ def login():
     if session.get("user_id"):
         return redirect(url_for("dashboard"))
     auth_url = request.host_url.rstrip("/") + url_for("auth_telegram")
-    # Для localhost показываем тестовый вход (без Telegram)
-    is_local = "localhost" in (request.host or "") or "127.0.0.1" in (request.host or "")
-    users = []
-    if is_local:
-        rows = execute_query(
-            "SELECT user_id, COALESCE(fio,''), role, COALESCE(sphere,'') FROM users ORDER BY role, user_id",
-            (),
-            fetchall=True,
-        )
-        users = [{"user_id": r[0], "fio": r[1] or f"ID{r[0]}", "role": r[2], "sphere": r[3]} for r in (rows or [])]
-    return render_template("login.html", bot_username=BOT_USERNAME, auth_url=auth_url, dev_users=users, is_local=is_local)
+    return render_template("login.html", bot_username=BOT_USERNAME, auth_url=auth_url)
 
 
 @app.route("/auth/dev", methods=["POST"])
