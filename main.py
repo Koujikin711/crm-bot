@@ -478,6 +478,84 @@ def pick_manager_for_new_lead(direction: str):
     )
     return row[0] if row else None
 
+
+async def _create_and_route_whatsapp_lead(phone: str, c_name: str, instance_name: str):
+    """Создать лид WhatsApp и сразу отправить менеджеру/в очередь."""
+    if not c_name or c_name == "[Файл/голос]":
+        c_name = "Клиент"
+    now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    target = pick_manager_for_new_lead(instance_name)
+    if target and manager_is_free_for_direction(target, instance_name):
+        execute_query("UPDATE users SET is_busy=1 WHERE user_id=?", (target,))
+        execute_query(
+            "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at, source) VALUES (?, ?, 'active', ?, ?, 1, ?, ?, 'WhatsApp')",
+            (phone, c_name, target, now_iso, instance_name, now_iso),
+        )
+        kb = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone[:30]}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone[:30]}").adjust(2).as_markup()
+        logging.info("%s: new lead %s -> manager %s", instance_name, phone, target)
+        print(f"[CRM] {instance_name}: new lead {phone} -> manager {target}")
+        try:
+            await bot.send_message(target, f"📥 <b>НОВЫЙ ЛИД</b>\n👤 {c_name}\n📞 {phone}", reply_markup=kb, parse_mode="HTML")
+        except Exception as e:
+            logging.exception("send_message to manager %s failed: %s", target, e)
+            print(f"[CRM] Ошибка отправки карточки менеджеру {target}: {e}")
+    elif target:
+        execute_query(
+            "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at, source) VALUES (?, ?, 'pending', ?, ?, 1, ?, ?, 'WhatsApp')",
+            (phone, c_name, target, now_iso, instance_name, now_iso),
+        )
+        logging.warning("%s: lead %s в личной очереди менеджера %s (pending)", instance_name, phone, target)
+        print(f"[CRM] {instance_name}: лид {phone} в очереди -> менеджер {target}")
+    else:
+        execute_query(
+            "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at, source) VALUES (?, ?, 'pending', NULL, ?, 1, ?, ?, 'WhatsApp')",
+            (phone, c_name, now_iso, instance_name, now_iso),
+        )
+        logging.warning("%s: no manager pool, lead %s pending (NULL)", instance_name, phone)
+        print(f"[CRM] {instance_name}: нет менеджеров для распределения, лид {phone} в общей очереди")
+
+
+async def _promote_auth_queue_to_leads():
+    """
+    Старые номера, которым отправили приветствие и не дождались ответа (step=1),
+    превращаем в реальные лиды, чтобы они учитывались в отчетах как новые.
+    """
+    rows = execute_query(
+        "SELECT phone, COALESCE(instance_sphere, 'biz') FROM auth_queue WHERE step = 1",
+        fetchall=True,
+    ) or []
+    promoted = 0
+    for phone, sphere in rows:
+        sphere = (sphere or "biz").strip().lower()
+        if sphere not in ("biz", "med"):
+            sphere = "biz"
+        exists = execute_query(
+            "SELECT 1 FROM leads WHERE phone = ? AND (direction = ? OR direction IS NULL) LIMIT 1",
+            (phone, sphere),
+            fetchone=True,
+        )
+        if exists:
+            execute_query("DELETE FROM auth_queue WHERE phone = ?", (phone,))
+            continue
+        try:
+            await _create_and_route_whatsapp_lead(phone, "Клиент", sphere)
+            promoted += 1
+            execute_query("DELETE FROM auth_queue WHERE phone = ?", (phone,))
+        except Exception as e:
+            logging.exception("promote_auth_queue: %s (%s): %s", phone, sphere, e)
+    if promoted:
+        logging.info("[CRM] auth_queue -> leads: promoted %s", promoted)
+        print(f"[CRM] auth_queue -> leads: promoted {promoted}")
+
+
+async def job_promote_auth_queue():
+    while True:
+        try:
+            await _promote_auth_queue_to_leads()
+        except Exception as e:
+            logging.exception("job_promote_auth_queue: %s", e)
+        await asyncio.sleep(300)
+
 # Чтобы наши логи точно были в выводе Amvera (и в консоли)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [CRM] %(levelname)s: %(message)s", datefmt="%H:%M:%S")
 log = logging.getLogger(__name__)
@@ -1112,76 +1190,12 @@ async def _process_wa_instance(instance_name, base_url, instance_id, token):
                         await bot.send_message(mgr_id, f"💬 <b>{c_name}</b> ({phone}):\n{txt}", reply_markup=kb, parse_mode="HTML")
                 else:
                     # Нет лида в базе — новый контакт (логика одинакова для медицины и бизнеса)
-                    q = execute_query("SELECT step, instance_sphere FROM auth_queue WHERE phone = ?", (phone,), fetchone=True)
-                    if not q:
-                        # Первый контакт — просим имя (med и biz)
-                        logging.info("%s: первый контакт с %s, просим имя", instance_name.upper(), phone)
-                        print(f"[CRM] {instance_name.upper()}: первый контакт с {phone}, просим имя")
-                        msg = "Салом, ном ва насаби худро нависед! Мо дар муддати кутоҳтарин ба шумо ҷавоб медиҳем!"
-                        await _wa_post(send_msg_url, {"chatId": chat_id, "message": msg})
-                        execute_query("INSERT OR REPLACE INTO auth_queue (phone, step, instance_sphere) VALUES (?, 1, ?)", (phone, instance_name))
-                    elif q[0] == 1 and (q[1] or instance_name) == instance_name:
-                        # Второе сообщение (имя) — создаём лид (med и biz). Перед созданием перепроверяем: лид мог уже появиться (гонка).
-                        recheck = execute_query(
-                            "SELECT manager_id, name FROM leads WHERE phone = ? AND (direction = ? OR direction IS NULL)",
-                            (phone, instance_name),
-                            fetchone=True,
-                        )
-                        if recheck:
-                            mgr_id_r, c_name_r = recheck[0], recheck[1] or phone
-                            execute_query("DELETE FROM auth_queue WHERE phone = ?", (phone,))
-                            execute_query("UPDATE leads SET last_touch = ? WHERE phone = ? AND (direction = ? OR direction IS NULL)", (datetime.now().strftime("%Y-%m-%d %H:%M"), phone, instance_name))
-                            txt_r = _extract_wa_text(body) if not body.get('messageData', {}).get('fileMessageData') else '[Файл/голос]'
-                            kb_r = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone[:30]}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone[:30]}").adjust(2).as_markup()
-                            try:
-                                await bot.send_message(mgr_id_r, f"💬 <b>{c_name_r}</b> ({phone}):\n{txt_r}", reply_markup=kb_r, parse_mode="HTML")
-                            except Exception:
-                                pass
-                            log_lead_event(phone, "incoming", txt_r[:200])
-                            await _wa_delete(delete_url + "/" + str(rid))
-                            processed_this_cycle += 1
-                            await asyncio.sleep(0)
-                            continue
-                        logging.info("%s: второе сообщение (имя) от %s, создаём лид", instance_name.upper(), phone)
-                        print(f"[CRM] {instance_name.upper()}: второе сообщение (имя) от {phone}, создаём лид")
-                        c_name = _extract_wa_text(body)
-                        if c_name == '[Файл/голос]':
-                            c_name = 'Клиент'
-                        execute_query("DELETE FROM auth_queue WHERE phone = ?", (phone,))
-                        target = pick_manager_for_new_lead(instance_name)
-                        now_iso = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        if target and manager_is_free_for_direction(target, instance_name):
-                            execute_query("UPDATE users SET is_busy=1 WHERE user_id=?", (target,))
-                            execute_query(
-                                "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at, source) VALUES (?, ?, 'active', ?, ?, 1, ?, ?, 'WhatsApp')",
-                                (phone, c_name, target, now_iso, instance_name, now_iso),
-                            )
-                            kb = InlineKeyboardBuilder().button(text="📞 ПОЗВОНИТЬ", callback_data=f"cl_{phone[:30]}").button(text="✍️ НАПИСАТЬ", callback_data=f"rp_{phone[:30]}").adjust(2).as_markup()
-                            logging.info("%s: new lead %s -> manager %s", instance_name, phone, target)
-                            print(f"[CRM] {instance_name}: new lead {phone} -> manager {target}")
-                            try:
-                                await bot.send_message(target, f"📥 <b>НОВЫЙ ЛИД</b>\n👤 {c_name}\n📞 {phone}", reply_markup=kb, parse_mode="HTML")
-                            except Exception as e:
-                                logging.exception("send_message to manager %s failed: %s", target, e)
-                                print(f"[CRM] Ошибка отправки карточки менеджеру {target}: {e}")
-                        elif target:
-                            execute_query(
-                                "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at, source) VALUES (?, ?, 'pending', ?, ?, 1, ?, ?, 'WhatsApp')",
-                                (phone, c_name, target, now_iso, instance_name, now_iso),
-                            )
-                            logging.warning("%s: lead %s в личной очереди менеджера %s (pending)", instance_name, phone, target)
-                            print(f"[CRM] {instance_name}: лид {phone} в очереди → менеджер {target}")
-                        else:
-                            execute_query(
-                                "INSERT INTO leads (phone, name, status, manager_id, last_touch, touches, direction, created_at, source) VALUES (?, ?, 'pending', NULL, ?, 1, ?, ?, 'WhatsApp')",
-                                (phone, c_name, now_iso, instance_name, now_iso),
-                            )
-                            logging.warning("%s: no manager pool, lead %s pending (NULL)", instance_name, phone)
-                            print(f"[CRM] {instance_name}: нет менеджеров для распределения, лид {phone} в общей очереди")
-                            try:
-                                await asyncio.sleep(0.3)
-                            except Exception:
-                                pass
+                    # Новый контакт: создаем лид сразу по первому сообщению, без промежуточного "приветствие -> ждем ответ".
+                    c_name = _extract_wa_text(body) if not body.get('messageData', {}).get('fileMessageData') else '[Файл/голос]'
+                    logging.info("%s: первый контакт с %s, создаём лид сразу", instance_name.upper(), phone)
+                    print(f"[CRM] {instance_name.upper()}: первый контакт с {phone}, создаём лид сразу")
+                    await _create_and_route_whatsapp_lead(phone, c_name, instance_name)
+                    execute_query("DELETE FROM auth_queue WHERE phone = ?", (phone,))
                 await _wa_delete(delete_url + "/" + str(rid))
                 processed_this_cycle += 1
                 await asyncio.sleep(0)  # отдать event loop — чтобы бот не «зависал»
@@ -3952,6 +3966,7 @@ async def main():
     asyncio.create_task(job_remind_24h())
     asyncio.create_task(job_chatting_idle())
     asyncio.create_task(job_tasks_reminder())
+    asyncio.create_task(job_promote_auth_queue())
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
