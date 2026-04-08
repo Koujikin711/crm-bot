@@ -591,6 +591,8 @@ class Form(StatesGroup):
     admin_biz_stats_custom = State()
     # Медицина: поступления лидов (кастомная дата/период)
     med_leads_custom_period = State()
+    # Статистика менеджеров: кастомный период
+    manager_stats_custom_period = State()
     # Медицина: завершение диалога -> Оплатил -> выбор пакета и суммы
     med_paid_fio = State()
     med_paid_sum = State()
@@ -713,6 +715,7 @@ def get_main_menu(uid):
         return kb.as_markup(resize_keyboard=True)
     if role == 'admin' and sphere == 'med':
         kb.button(text="📊 Нагруженность"); kb.button(text="📈 Статистика лидов")
+        kb.button(text="👥 Статистика менеджеров")
         kb.button(text="📅 Записать к Ганчине"); kb.button(text="📋 Лиды в работе"); kb.button(text="📥 Поступления лидов (мед)")
         kb.button(text="💬 Начать диалог"); kb.button(text="🔍 Поиск лида"); kb.button(text="📌 Доработать"); kb.button(text="💰 Оплаты"); kb.button(text="🔄 Продлить курс")
         kb.button(text="🗓 Онлайн запись")
@@ -727,6 +730,7 @@ def get_main_menu(uid):
     # Бизнес: admin — свои кнопки
     if role == 'admin' and (sphere == 'biz' or sphere is None):
         kb.button(text="📈 Статистика"); kb.button(text="👤 KPI Менеджеров")
+        kb.button(text="👥 Статистика менеджеров")
         kb.button(text="🎯 Назначить План"); kb.button(text="📥 ВКЛ/ВЫКЛ лидов")
         kb.button(text="📋 Лиды в работе"); kb.button(text="💬 Начать диалог")
         kb.button(text="🔍 Поиск лида"); kb.button(text="📌 Доработать")
@@ -738,6 +742,7 @@ def get_main_menu(uid):
 def get_owner_med_menu():
     kb = ReplyKeyboardBuilder()
     kb.button(text="📊 Нагруженность"); kb.button(text="📈 Статистика лидов")
+    kb.button(text="👥 Статистика менеджеров")
     kb.button(text="👤 Назначить Админа"); kb.button(text="📂 Загрузка данных")
     kb.button(text="👑 Дать права владельца"); kb.button(text="💰 Приход"); kb.button(text="🎯 План/KPI"); kb.button(text="🎯 Поставить План")
     kb.button(text="🗓 Онлайн запись")
@@ -751,6 +756,7 @@ def get_owner_biz_menu():
     l_btn = "🟢 ВКЛ ЛИДЫ" if (l_on and l_on[0] == '1') else "🔴 ВЫКЛ ЛИДЫ"
     kb = ReplyKeyboardBuilder()
     kb.button(text="📈 Статистика"); kb.button(text="👤 KPI Менеджеров")
+    kb.button(text="👥 Статистика менеджеров")
     kb.button(text="📋 Лиды в работе"); kb.button(text="💬 Начать диалог")
     kb.button(text="🔍 Поиск лида"); kb.button(text="📥 Поступления лидов")
     kb.button(text=l_btn)
@@ -1556,6 +1562,63 @@ def _med_stats_for_period(start_dt, end_dt):
     )[0] or 0
     return total, answered, sold
 
+
+def _manager_new_leads_rows(direction: str, start_dt, end_dt):
+    """Сколько новых лидов за период выпало каждому менеджеру (по created_at)."""
+    start_str = start_dt.strftime("%Y-%m-%d %H:%M:%S")
+    end_str = end_dt.strftime("%Y-%m-%d %H:%M:%S")
+    if direction == "med":
+        staff_rows = execute_query(
+            "SELECT user_id, COALESCE(fio, CAST(user_id AS TEXT)) FROM users WHERE LOWER(role)='manager' AND sphere='med' ORDER BY user_id",
+            fetchall=True,
+        ) or []
+        cond = "direction = 'med'"
+    else:
+        staff_rows = execute_query(
+            """SELECT user_id, COALESCE(fio, CAST(user_id AS TEXT)) FROM users
+               WHERE ((LOWER(role)='manager' AND (sphere='biz' OR sphere IS NULL OR TRIM(COALESCE(sphere,''))='') AND COALESCE(can_receive_leads,1)=1)
+                  OR  (LOWER(role)='admin'   AND (sphere='biz' OR sphere IS NULL OR TRIM(COALESCE(sphere,''))='') AND COALESCE(can_receive_leads,0)=1))
+               ORDER BY user_id""",
+            fetchall=True,
+        ) or []
+        cond = BIZ_LEAD_COND
+
+    counts_rows = execute_query(
+        f"""SELECT manager_id, COUNT(*) FROM leads
+            WHERE manager_id IS NOT NULL
+              AND {cond}
+              AND created_at BETWEEN ? AND ?
+              AND (phone NOT LIKE 'TEST_%')
+            GROUP BY manager_id""",
+        (start_str, end_str),
+        fetchall=True,
+    ) or []
+    counts = {r[0]: (r[1] or 0) for r in counts_rows}
+    result = [(uid, fio, counts.get(uid, 0)) for uid, fio in staff_rows]
+    result.sort(key=lambda x: (-x[2], x[1].lower()))
+    return result
+
+
+def _manager_stats_sphere_for_user(role: str, sphere: str, state_sphere: str = None):
+    if role == "owner":
+        return state_sphere if state_sphere in ("med", "biz") else "biz"
+    if role == "admin" and sphere == "med":
+        return "med"
+    if role == "admin" and (sphere == "biz" or sphere is None):
+        return "biz"
+    return None
+
+
+def _manager_stats_period_bounds(period: str):
+    now = datetime.now()
+    if period == "day":
+        return now.replace(hour=0, minute=0, second=0, microsecond=0), now, "день"
+    if period == "week":
+        return now - timedelta(days=7), now, "неделя"
+    if period == "month":
+        return now - timedelta(days=30), now, "месяц"
+    return None, None, None
+
 @dp.message(F.text == "📈 Статистика")
 async def stats(m: types.Message, state: FSMContext):
     u = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (m.from_user.id,), fetchone=True)
@@ -1782,6 +1845,114 @@ async def admin_biz_stats_custom_done(m: types.Message, state: FSMContext):
         f"📈 Конверсия в продажу (из дозвонов): {conv_sale}%"
     )
     await m.answer(text, parse_mode="HTML")
+    await state.clear()
+
+
+@dp.message(F.text == "👥 Статистика менеджеров")
+async def manager_stats_menu(m: types.Message, state: FSMContext):
+    u = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (m.from_user.id,), fetchone=True)
+    if not u:
+        return
+    role, sphere = u[0], u[1]
+    data = await state.get_data()
+    target_sphere = _manager_stats_sphere_for_user(role, sphere, data.get("owner_current_sphere"))
+    if target_sphere not in ("med", "biz"):
+        return
+    title = "Медицина" if target_sphere == "med" else "Бизнес"
+    kb = InlineKeyboardBuilder()
+    kb.button(text="День", callback_data=f"mgrstats_{target_sphere}_day")
+    kb.button(text="Неделя", callback_data=f"mgrstats_{target_sphere}_week")
+    kb.button(text="Месяц", callback_data=f"mgrstats_{target_sphere}_month")
+    kb.button(text="Другая дата/период", callback_data=f"mgrstats_{target_sphere}_custom")
+    kb.adjust(2)
+    await m.answer(f"👥 Статистика менеджеров ({title}). Выбери период:", reply_markup=kb.as_markup())
+
+
+@dp.callback_query(F.data.startswith("mgrstats_"))
+async def manager_stats_period_cb(c: types.CallbackQuery, state: FSMContext):
+    u = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (c.from_user.id,), fetchone=True)
+    if not u:
+        await c.answer()
+        return
+    role, sphere = u[0], u[1]
+    parts = c.data.split("_", 2)
+    if len(parts) != 3:
+        await c.answer()
+        return
+    _, direction, period = parts
+    data = await state.get_data()
+    allowed_sphere = _manager_stats_sphere_for_user(role, sphere, data.get("owner_current_sphere"))
+    if direction not in ("med", "biz") or direction != allowed_sphere:
+        await c.answer("Нет доступа")
+        return
+    if period == "custom":
+        await state.set_state(Form.manager_stats_custom_period)
+        await state.update_data(manager_stats_direction=direction)
+        await c.message.edit_text(
+            "Введите дату или период:\n"
+            "- один день: 2026-02-24\n"
+            "- период: 2026-02-01 2026-02-24"
+        )
+        await c.answer()
+        return
+    start_dt, end_dt, label = _manager_stats_period_bounds(period)
+    if not start_dt:
+        await c.answer()
+        return
+    rows = _manager_new_leads_rows(direction, start_dt, end_dt)
+    title = "Медицина" if direction == "med" else "Бизнес"
+    total = sum(r[2] for r in rows)
+    body = "\n".join([f"• {fio}: {cnt}" for _, fio, cnt in rows]) if rows else "Нет менеджеров."
+    await c.message.edit_text(
+        f"👥 <b>Статистика менеджеров ({title}) — {label}</b>\n\n"
+        f"Новых лидов за период: {total}\n\n"
+        f"{body}",
+        parse_mode="HTML",
+    )
+    await c.answer()
+
+
+@dp.message(Form.manager_stats_custom_period)
+async def manager_stats_custom_done(m: types.Message, state: FSMContext):
+    u = execute_query("SELECT role, sphere FROM users WHERE user_id = ?", (m.from_user.id,), fetchone=True)
+    if not u:
+        await state.clear()
+        return
+    role, user_sphere = u[0], u[1]
+    data = await state.get_data()
+    direction = data.get("manager_stats_direction")
+    allowed_sphere = _manager_stats_sphere_for_user(role, user_sphere, data.get("owner_current_sphere"))
+    if direction not in ("med", "biz") or direction != allowed_sphere:
+        await state.clear()
+        return
+    parts = (m.text or "").strip().split()
+    try:
+        if len(parts) == 1:
+            d1 = datetime.strptime(parts[0], "%Y-%m-%d").date()
+            d2 = d1
+        elif len(parts) == 2:
+            d1 = datetime.strptime(parts[0], "%Y-%m-%d").date()
+            d2 = datetime.strptime(parts[1], "%Y-%m-%d").date()
+        else:
+            raise ValueError()
+    except ValueError:
+        await m.answer("Неверный формат. Пример:\n2026-02-24\nили\n2026-02-01 2026-02-24")
+        return
+    if d2 < d1:
+        d1, d2 = d2, d1
+    start_dt = datetime.combine(d1, datetime.min.time())
+    end_dt = datetime.combine(d2, datetime.max.time()).replace(microsecond=0)
+    rows = _manager_new_leads_rows(direction, start_dt, end_dt)
+    title = "Медицина" if direction == "med" else "Бизнес"
+    label = d1.isoformat() if d1 == d2 else f"{d1.isoformat()}—{d2.isoformat()}"
+    total = sum(r[2] for r in rows)
+    body = "\n".join([f"• {fio}: {cnt}" for _, fio, cnt in rows]) if rows else "Нет менеджеров."
+    await m.answer(
+        f"👥 <b>Статистика менеджеров ({title}) — {label}</b>\n\n"
+        f"Новых лидов за период: {total}\n\n"
+        f"{body}",
+        parse_mode="HTML",
+    )
     await state.clear()
 
 @dp.message(F.text == "👤 KPI Менеджеров")
