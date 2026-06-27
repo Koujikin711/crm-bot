@@ -29,3 +29,7 @@ env/
 # Прочее
 .DS_Store
 *.log
+
+node_modules
+
+demo-desktop/runtime/.venv
