@@ -1,35 +1,33 @@
-# Python
-__pycache__/
-*.py[cod]
+
 *$py.class
-*.so
-.Python
-venv/
-.venv/
-env/
-
-# База (если храните локально; на Amvera лучше CRM_DB_PATH в /data)
+AGENTS.md
+.claude/
+.cursor/
 *.db
-*.sqlite3
-
-# Секреты и конфиги с токенами (не коммитить!)
-.env
-.env.local
+demo-desktop/runtime/.venv
+.DS_Store
 *.env
-
-# Сессия Telethon (чувствительные данные; один раз закоммичена для Amvera)
-# *.session
-
+.env
+env/
+.env.local
 # IDE
 .idea/
-.vscode/
-*.swp
-*.swo
-
-# Прочее
-.DS_Store
 *.log
-
 node_modules
-
-demo-desktop/runtime/.venv
+__pycache__/
+*.py[cod]
+# Python
+.Python
+# *.session
+*.session
+*.so
+*.sqlite3
+*.swo
+*.swp
+.venv/
+venv/
+.vscode/
+# База (если храните локально; на Amvera лучше CRM_DB_PATH в /data)
+# Прочее
+# Секреты и конфиги с токенами (не коммитить!)
+# Сессия Telethon (чувствительные данные; один раз закоммичена для Amvera)

@@ -1,150 +1,25 @@
-# Как менять код в Cursor и сразу деплоить на Amvera (без ручной загрузки main.py)
+# Deploy to Amvera
 
-## Идея
+This project deploys from the `main` branch via Git.
 
-Ты правишь код в Cursor (или я правлю за тебя). Потом делаешь **один раз** `git push` — и Amvera сама подтягивает новый код и перезапускает приложение. Файл main.py вручную никуда заливать не нужно.
+## Flow
 
----
+1. Commit changes locally
+2. `git push origin main`
+3. Amvera pulls the branch and restarts the service
 
-## Привязка GitHub к Amvera (пошагово)
+## First-time setup
 
-### Шаг 1. Токен для GitHub (если репозиторий приватный)
+1. Create an app on Amvera and connect this GitHub repository
+2. Set environment variables from `.env.example` in the Amvera panel
+3. Confirm `amvera.yml` / `amvera-web.yml` match the service entrypoint
 
-Если репо **приватный**, нужен токен:
-
-1. GitHub → твой аватар (правый верх) → **Settings**.
-2. Слева внизу → **Developer settings** → **Personal access tokens** → **Tokens (classic)**.
-3. **Generate new token (classic)** → название, например `amvera`, галочка **repo**, срок — на твой выбор.
-4. **Generate token** → скопируй токен и сохрани (потом не покажут).
-
-Публичный репо можно подключить без токена (но токен может всё равно понадобиться для доступа).
-
----
-
-### Шаг 2. Настройка в Amvera
-
-1. Зайди на **[amvera.ru](https://amvera.ru)** → открой свой проект (или создай новый и выбери Python / свой тип приложения).
-2. В проекте открой вкладку **«Репозиторий»** (или **«Git»** в настройках).
-3. Выбери сервис **GitHub**.
-4. Если репо приватный — вставь **токен** в поле (тот, что создал в шаге 1).
-5. Выбери **событие**: отметь **Push** (при каждом `git push` будет запускаться сборка). При желании можно добавить **Workflow runs** (CI).
-6. **Секрет вебхука** — придумай любую строку (например `my-secret-123`), введи и запомни: тот же секрет потом вставишь в GitHub.
-7. **Ветка** — укажи `main` (или ту ветку, в которую пушишь).
-8. Нажми **«Применить»** (или **«Сохранить»**).
-9. Amvera покажет **адрес вебхука** — скопируй его (выглядит как `https://...amvera.../webhook/...`).
-
----
-
-### Шаг 3. Вебхук в GitHub
-
-1. Открой свой репозиторий на GitHub (например `github.com/ТВОЙ_ЛОГИН/crm-bot`).
-2. **Settings** репозитория → слева **Webhooks** → **Add webhook**.
-3. Заполни:
-   - **Payload URL** — вставь адрес вебхука из Amvera.
-   - **Content type** — **application/json**.
-   - **Secret** — тот же секрет, что вводил в Amvera (шаг 2).
-   - **Which events?** — **Just the push event** (или «Send me everything» — Amvera реагирует только на push).
-4. Нажми **Add webhook**.
-
-Готово: при каждом `git push` в выбранную ветку GitHub отправит запрос в Amvera, Amvera подтянет код и запустит сборку/деплой.
-
----
-
-### Шаг 4. Проверка
-
-В терминале в папке проекта:
-
-```powershell
-git add .
-git commit -m "тест деплоя"
-git push
-```
-
-Потом в Amvera открой вкладку **«Сборка»** / **«Логи»** — должна начаться новая сборка. После успешной сборки приложение перезапустится с новым кодом.
-
----
-
-## Вариант A: GitHub + авто-деплой (кратко)
-
-### 1. Инициализировать Git в проекте (один раз)
-
-В терминале Cursor в папке проекта:
+## Local run
 
 ```bash
-git init
-git add .
-git commit -m "Initial: CRM bot"
+pip install -r requirements.txt
+cp .env.example .env   # fill tokens
+python main.py
 ```
 
-### 2. Создать репозиторий на GitHub
-
-- Зайди на [github.com](https://github.com) → New repository.
-- Назови, например, `crm-bot`, репозиторий может быть приватным.
-- **Не** ставь галочку "Add README" (у тебя уже есть файлы).
-
-### 3. Привязать папку к GitHub и первый раз отправить код
-
-В терминале (подставь свой логин и имя репо):
-
-```bash
-git remote add origin https://github.com/ТВОЙ_ЛОГИН/crm-bot.git
-git branch -M main
-git push -u origin main
-```
-
-### 4. Подключить Amvera
-
-См. раздел **«Привязка GitHub к Amvera»** выше.
-
-После этого **каждый `git push` в ветку `main` будет автоматически запускать пересборку и деплой на Amvera.**
-
-### 5. Обычный рабочий процесс
-
-1. Меняешь код в Cursor (или я меняю по твоим запросам).
-2. В терминале:
-
-   ```bash
-   git add .
-   git commit -m "описание изменений"
-   git push
-   ```
-
-3. Идёшь в Amvera → смотришь логи сборки и деплоя. Готово.
-
----
-
-## Вариант B: Пуш напрямую в Git Amvera (без GitHub)
-
-Если хочешь пушить сразу в Amvera без GitHub:
-
-1. В панели Amvera открой проект → раздел про Git.
-2. Там будет URL вида: `https://git.amvera.ru/ИМЯ_ПОЛЬЗОВАТЕЛЯ/ИМЯ_ПРОЕКТА`.
-3. В папке проекта в Cursor:
-
-   ```bash
-   git init
-   git add .
-   git commit -m "Initial"
-   git remote add amvera https://git.amvera.ru/ИМЯ_ПОЛЬЗОВАТЕЛЯ/ИМЯ_ПРОЕКТА
-   git push amvera main:master
-   ```
-
-   (если у тебя ветка не `main`, подставь свою; часто Amvera ждёт `master`.)
-
-Дальше при изменениях:
-
-```bash
-git add .
-git commit -m "описание"
-git push amvera main:master
-```
-
----
-
-## Что важно
-
-- **База данных:** на Amvera задай переменную окружения `CRM_DB_PATH`, например `/data/crm_base.db`, чтобы данные не терялись при пересборке (если Amvera даёт постоянный том для /data).
-- **Токены:** API_TOKEN, Green API и т.д. лучше задавать через переменные окружения в настройках проекта Amvera, а не хранить в коде в репозитории.
-- После первого подключения репозитория **main.py ты больше не заливаешь вручную** — только правки в Cursor и `git push`.
-
-Если напишешь, какой вариант хочешь (A с GitHub или B напрямую в Amvera), могу под тебя расписать команды по шагам под твой логин и имя проекта.
+Do not commit secrets, `.env`, or Telegram session files.

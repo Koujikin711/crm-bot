@@ -39,7 +39,7 @@ pip install -r requirements.txt
 **Если бот запущен на Amvera** — интерактивной консоли там нет, ввести код нельзя. Нужно один раз войти на своём ПК и загрузить сессию на Amvera:
 
 1. На своём компьютере открой папку проекта CRM, в ней должен быть файл `.env` с `TELEGRAM_LEADS_PHONE`, `TELEGRAM_API_ID`, `TELEGRAM_API_HASH`.
-2. Открой **терминал** (консоль): в Cursor это вкладка «Terminal» внизу, в Windows — PowerShell или cmd, перейди в папку проекта: `cd путь\к\CRM`.
+2. Открой **терминал** (консоль): перейди в папку проекта: `cd путь\к\CRM`.
 3. Выполни:
    ```bash
    pip install -r requirements.txt
